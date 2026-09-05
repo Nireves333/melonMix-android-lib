@@ -204,13 +204,15 @@ void blah(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length
     printf("%s\n", message);
 }
 
-std::unique_ptr<ComputeRenderer> ComputeRenderer::New()
+std::unique_ptr<ComputeRenderer> ComputeRenderer::New(Plugins::Plugin* plugin) // [KHMM] plugin param
 {
-    std::optional<GLCompositor> compositor =  GLCompositor::New();
+    std::optional<GLCompositor> compositor =  GLCompositor::New(plugin); // [KHMM]
     if (!compositor)
         return nullptr;
 
     std::unique_ptr<ComputeRenderer> result = std::unique_ptr<ComputeRenderer>(new ComputeRenderer(std::move(*compositor)));
+    result->GamePlugin = plugin;            // [KHMM]
+    result->Texcache.GamePlugin = plugin;   // [KHMM] texcache needs the plugin for texture replacement
 
     //glDebugMessageCallback(blah, NULL);
     //glEnable(GL_DEBUG_OUTPUT);
@@ -703,7 +705,7 @@ void ComputeRenderer::RenderFrame(GPU& gpu)
             // we always need to look up the texture to get the layer of the array texture
             if (enableTextureMaps && (polygon->TexParam >> 26) & 0x7)
             {
-                Texcache.GetTexture(gpu, polygon->TexParam, polygon->TexPalette, variant.Texture, prevTexLayer, textureLastVariant);
+                Texcache.GetTexture(gpu, polygon->TexParam, polygon->Width, polygon->Height, polygon->TexPalette, variant.Texture, prevTexLayer, textureLastVariant); // [KHMM] new signature: fills polygon Width/Height (texture replacement)
                 bool wrapS = (polygon->TexParam >> 16) & 1;
                 bool wrapT = (polygon->TexParam >> 17) & 1;
                 bool mirrorS = (polygon->TexParam >> 18) & 1;
@@ -731,8 +733,8 @@ void ComputeRenderer::RenderFrame(GPU& gpu)
 
                 prevVariant = numVariants;
                 variants[numVariants] = variant;
-                variants[numVariants].Width = TextureWidth(polygon->TexParam);
-                variants[numVariants].Height = TextureHeight(polygon->TexParam);
+                variants[numVariants].Width  = polygon->Width;  // [KHMM] dims from texcache (may be replaced-texture size)
+                variants[numVariants].Height = polygon->Height; // [KHMM]
                 numVariants++;
                 assert(numVariants <= MaxVariants);
             foundVariant:;
@@ -773,6 +775,13 @@ void ComputeRenderer::RenderFrame(GPU& gpu)
                 scaledPositions[i][0] = polygon->Vertices[i]->FinalPosition[0] * ScaleFactor;
                 scaledPositions[i][1] = polygon->Vertices[i]->FinalPosition[1] * ScaleFactor;
             }
+        }
+
+        // [KHMM] let the plugin reshape the polygon before bounds are computed — from KHMelonMix src/GPU3D_Compute.cpp
+        GamePlugin->gpuOpenGL_applyChangesToPolygon(ScaleFactor, scaledPositions, polygon);
+
+        for (int i = 0; i < polygon->NumVertices; i++)
+        {
             ytop = std::min(scaledPositions[i][1], ytop);
             ybot = std::max(scaledPositions[i][1], ybot);
         }

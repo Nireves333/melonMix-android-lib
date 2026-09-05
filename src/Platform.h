@@ -23,6 +23,7 @@
 
 #include <functional>
 #include <string>
+#include <vector> // [KHMM] for ContentsOfFolder
 
 namespace melonDS
 {
@@ -188,6 +189,9 @@ FileHandle* OpenLocalFile(const std::string& path, FileMode mode);
 /// Returns true if the given file exists.
 bool FileExists(const std::string& name);
 bool LocalFileExists(const std::string& name);
+
+// [KHMM] list entries in a folder (used by plugin asset/save discovery) — from KHMelonMix src/Platform.h
+std::vector<std::string> ContentsOfFolder(const std::string& path, bool includeFolders, bool includeFiles);
 
 // Returns true if we have permission to write to the file.
 // Warning: Also creates the file if not present!

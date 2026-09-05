@@ -38,7 +38,7 @@ namespace melonDS
 class ComputeRenderer : public Renderer3D
 {
 public:
-    static std::unique_ptr<ComputeRenderer> New();
+    static std::unique_ptr<ComputeRenderer> New(Plugins::Plugin* plugin); // [KHMM] plugin param
     ~ComputeRenderer() override;
 
     void Reset(GPU& gpu) override;
@@ -239,6 +239,8 @@ private:
     void SetupYSpanDummy(RenderPolygon* rp, SpanSetupY* span, Polygon* poly, int vertex, int side, s32 positions[10][2]);
 
     bool CompileShader(GLuint& shader, const std::string& source, const std::initializer_list<const char*>& defines);
+
+    Plugins::Plugin* GamePlugin = nullptr; // [KHMM] active game plugin (polygon rewrite)
 };
 
 }

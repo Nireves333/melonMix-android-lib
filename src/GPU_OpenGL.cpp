@@ -33,24 +33,35 @@ namespace melonDS
 
 using namespace OpenGL;
 
-std::optional<GLCompositor> GLCompositor::New() noexcept
+std::optional<GLCompositor> GLCompositor::New(Plugins::Plugin* plugin) noexcept // [KHMM] plugin param
 {
     assert(glBindAttribLocation != nullptr);
     GLuint CompShader {};
 
+    // [KHMM] let the game plugin supply a custom composite fragment shader (single-screen / HUD layout) — from KHMelonMix src/GPU_OpenGL.cpp
+    const char* kCompositorFS_Custom = plugin == nullptr ? nullptr : plugin->gpuOpenGL_FS();
+    const char* compositorFS = kCompositorFS_Custom == nullptr ? kCompositorFS_Nearest : kCompositorFS_Custom;
     if (!OpenGL::CompileVertexFragmentProgram(CompShader,
-            kCompositorVS, kCompositorFS_Nearest,
+            kCompositorVS, compositorFS,
             "CompositorShader",
             {{"vPosition", 0}, {"vTexcoord", 1}},
             {{"oColor", 0}}))
         return std::nullopt;
 
-    return { GLCompositor(CompShader) };
+    return { GLCompositor(CompShader, plugin) }; // [KHMM]
 }
 
-GLCompositor::GLCompositor(GLuint compShader) noexcept : CompShader(compShader)
+GLCompositor::GLCompositor(GLuint compShader, Plugins::Plugin* plugin) noexcept : CompShader(compShader) // [KHMM] plugin param
 {
     CompScaleLoc = glGetUniformLocation(CompShader, "u3DScale");
+
+    // [KHMM] hand the compositor shader to the plugin to bind its custom uniforms —
+    // only when the plugin actually supplied a custom shader (see UsesPluginShader).
+    GamePlugin = plugin;
+    UsesPluginShader = (GamePlugin != nullptr && GamePlugin->gpuOpenGL_FS() != nullptr);
+    if (UsesPluginShader) {
+        GamePlugin->gpuOpenGL_FS_initVariables(CompShader);
+    }
 
     glUseProgram(CompShader);
     GLuint screenTextureUniform = glGetUniformLocation(CompShader, "ScreenTex");
@@ -145,7 +156,9 @@ GLCompositor::GLCompositor(GLCompositor&& other) noexcept :
     CompVertexArrayID(other.CompVertexArrayID),
     CompScreenInputTex(other.CompScreenInputTex),
     CompScreenOutputTex(other.CompScreenOutputTex),
-    CompScreenOutputFB(other.CompScreenOutputFB)
+    CompScreenOutputFB(other.CompScreenOutputFB),
+    GamePlugin(other.GamePlugin), // [KHMM]
+    UsesPluginShader(other.UsesPluginShader) // [KHMM]
 {
     other.CompScreenOutputFB = {};
     other.CompScreenInputTex = {};
@@ -252,6 +265,12 @@ void GLCompositor::RenderFrame(const GPU& gpu, Renderer3D& renderer) noexcept
     // TODO: select more shaders (filtering, etc)
     glUseProgram(CompShader);
     glUniform1ui(CompScaleLoc, Scale);
+
+    // [KHMM] refresh plugin-owned composite-shader uniforms each frame — only when the
+    // plugin's custom shader is actually in use — from KHMelonMix src/GPU_OpenGL.cpp
+    if (UsesPluginShader) {
+        GamePlugin->gpuOpenGL_FS_updateVariables(CompShader);
+    }
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, CompScreenInputTex);

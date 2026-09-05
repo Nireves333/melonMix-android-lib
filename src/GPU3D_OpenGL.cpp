@@ -94,17 +94,18 @@ GLRenderer::GLRenderer(GLCompositor&& compositor) noexcept :
     // so we can just let the destructor clean up a half-initialized renderer.
 }
 
-std::unique_ptr<GLRenderer> GLRenderer::New() noexcept
+std::unique_ptr<GLRenderer> GLRenderer::New(Plugins::Plugin* plugin) noexcept // [KHMM] plugin param
 {
     assert(glEnable != nullptr);
 
-    std::optional<GLCompositor> compositor =  GLCompositor::New();
+    std::optional<GLCompositor> compositor =  GLCompositor::New(plugin); // [KHMM]
     if (!compositor)
         return nullptr;
 
     // Will be returned if the initialization succeeds,
     // or cleaned up via RAII if it fails.
     std::unique_ptr<GLRenderer> result = std::unique_ptr<GLRenderer>(new GLRenderer(std::move(*compositor)));
+    result->GamePlugin = plugin; // [KHMM]
     compositor = std::nullopt;
 
     glEnable(GL_DEPTH_TEST);
@@ -489,6 +490,8 @@ void GLRenderer::BuildPolygons(GLRenderer::RendererPolygon* polygons, int npolys
     {
         RendererPolygon* rp = &polygons[i];
         Polygon* poly = rp->PolyData;
+        u32* polyVptr = vptr;                  // [KHMM] track this poly's vertex data for plugin rewrite
+        bool betterPolygons = BetterPolygons;  // [KHMM] local copy (plugin may force splitting)
 
         rp->IndicesOffset = iidx;
         rp->NumIndices = 0;
@@ -555,7 +558,29 @@ void GLRenderer::BuildPolygons(GLRenderer::RendererPolygon* polygons, int npolys
         {
             rp->PrimType = GL_TRIANGLES;
 
-            if (!BetterPolygons)
+            // [KHMM] give the plugin a chance to reshape this polygon; it may force the
+            // triangle-splitting path — from KHMelonMix src/GPU3D_OpenGL.cpp
+            if (betterPolygons)
+            {
+                u32* tmpVptr = vptr;
+                for (u32 j = 0; j < poly->NumVertices; j++)
+                {
+                    Vertex* vtx = poly->Vertices[j];
+                    tmpVptr = SetupVertex(poly, j, vtx, vtxattr, tmpVptr);
+                }
+
+                s32 scaledPositions[10][2];
+                for (int i = 0; i < poly->NumVertices; i++)
+                {
+                    u32 polyXY = polyVptr[i*7];
+                    scaledPositions[i][0] = polyXY & 0xFFFF;
+                    scaledPositions[i][1] = (polyXY >> 16) & 0xFFFF;
+                }
+
+                betterPolygons = !GamePlugin->gpuOpenGL_applyChangesToPolygon(ScaleFactor, scaledPositions, poly);
+            }
+
+            if (!betterPolygons)
             {
                 // regular triangle-splitting
 
@@ -693,6 +718,30 @@ void GLRenderer::BuildPolygons(GLRenderer::RendererPolygon* polygons, int npolys
         IndexBuffer[eidx++] = vidx_cur;
         IndexBuffer[eidx++] = vidx_first;
         rp->NumEdgeIndices += 2;
+
+        // [KHMM] let the plugin rewrite the final scaled vertex positions (single-screen /
+        // widescreen layout), then clamp and write them back — from KHMelonMix src/GPU3D_OpenGL.cpp
+        {
+            int indexOffset = (poly->Type != 1 && poly->NumVertices != 3 && betterPolygons) ? 1 : 0;
+
+            s32 scaledPositions[10][2];
+            for (int i = 0; i < poly->NumVertices + indexOffset; i++)
+            {
+                u32 polyXY = polyVptr[i*7];
+                scaledPositions[i][0] = polyXY & 0xFFFF;
+                scaledPositions[i][1] = (polyXY >> 16) & 0xFFFF;
+            }
+
+            GamePlugin->gpuOpenGL_applyChangesToPolygon(ScaleFactor, scaledPositions, poly);
+
+            for (int i = 0; i < poly->NumVertices + indexOffset; i++)
+            {
+                s32 x = std::min(std::max(scaledPositions[i][0], 0), 256*ScaleFactor);
+                s32 y = std::min(std::max(scaledPositions[i][1], 0), 192*ScaleFactor);
+                u32 polyXY = x | (y << 16);
+                polyVptr[i*7] = polyXY;
+            }
+        }
     }
 
     NumVertices = vidx;

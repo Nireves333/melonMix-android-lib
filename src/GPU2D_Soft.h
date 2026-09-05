@@ -20,6 +20,9 @@
 
 #include "GPU2D.h"
 
+// [KHMM] software renderer can hold the game plugin — from KHMelonMix src/GPU2D_Soft.h
+#include "plugins/Plugin.h"
+
 namespace melonDS
 {
 class GPU;
@@ -36,8 +39,12 @@ public:
     void DrawScanline(u32 line, Unit* unit) override;
     void DrawSprites(u32 line, Unit* unit) override;
     void VBlankEnd(Unit* unitA, Unit* unitB) override;
+
+    void setPlugin(Plugins::Plugin* _plugin) { plugin = _plugin; } // [KHMM]
+
 private:
     melonDS::GPU& GPU;
+    Plugins::Plugin* plugin = nullptr; // [KHMM]
     alignas(8) u32 BGOBJLine[256*3];
     u32* _3DLine;
 

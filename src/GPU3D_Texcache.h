@@ -3,26 +3,25 @@
 
 #include "types.h"
 #include "GPU.h"
+#include "GPU_Texreplace.h"
 
 #include <assert.h>
 #include <unordered_map>
 #include <vector>
 
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <sstream>
+
+#include "plugins/PluginManager.h"
+
 #define XXH_STATIC_LINKING_ONLY
 #include "xxhash/xxhash.h"
+#include "xxhash_legacy/xxhash_legacy.h"
 
 namespace melonDS
 {
-
-inline u32 TextureWidth(u32 texparam)
-{
-    return 8 << ((texparam >> 20) & 0x7);
-}
-
-inline u32 TextureHeight(u32 texparam)
-{
-    return 8 << ((texparam >> 23) & 0x7);
-}
 
 enum
 {
@@ -47,6 +46,8 @@ public:
     Texcache(const TexLoaderT& texloader)
         : TexLoader(texloader) // probably better if this would be a move constructor???
     {}
+
+    Plugins::Plugin* GamePlugin;
 
     u64 MaskedHash(u8* vram, u32 vramSize, u32 addr, u32 size)
     {
@@ -143,7 +144,23 @@ public:
         return false;
     }
 
-    void GetTexture(GPU& gpu, u32 texParam, u32 palBase, TexHandleT& textureHandle, u32& layer, u32*& helper)
+    int RightmostBit(u32 num) {
+        int c = 0;
+        if (num == 0) {
+            return 0;
+        }
+        while ((num & 1) == 0) {
+            num >>= 1;
+            c++;
+        }
+        return c;
+    }
+
+    bool isValidWidthOrHeight(u32 widthOrHeight) {
+        return widthOrHeight == (1 << RightmostBit(widthOrHeight));
+    }
+
+    void GetTexture(GPU& gpu, u32 texParam, u32& width, u32& height, u32 palBase, TexHandleT& textureHandle, u32& layer, u32*& helper)
     {
         // remove sampling and texcoord gen params
         texParam &= ~0xC00F0000;
@@ -162,18 +179,47 @@ public:
 
         auto it = Cache.find(key);
 
+        bool textureReplacementEnabled = !GamePlugin->areReplacementTexturesDisabled();
+
         if (it != Cache.end())
         {
-            textureHandle = it->second.Texture.TextureID;
-            layer = it->second.Texture.Layer;
-            helper = &it->second.LastVariant;
-            return;
+            bool requiresLoading = false;
+            if (textureReplacementEnabled != it->second.Texture.WasReplacementEnabled) {
+                requiresLoading = true;
+            }
+
+            auto index = it->second.Texture.CurrentIndex;
+            if (!requiresLoading) {
+                if (it->second.Texture.Countdown > 0 && it->second.Texture.Countdown-- == 1) {
+                    index++;
+
+                    if (it->second.Texture.TimePerIndex.size() == it->second.Texture.TotalScenes) {
+                        if (it->second.Texture.TimePerIndex.find(index) == it->second.Texture.TimePerIndex.end()) {
+                            index = 0;
+                        }
+                        it->second.Texture.Countdown = it->second.Texture.TimePerIndex[index] + 1;
+                    }
+                    else {
+                        requiresLoading = true;
+                    }
+                }
+                it->second.Texture.CurrentIndex = index;
+            }
+
+            if (!requiresLoading) {
+                textureHandle = it->second.Texture.TextureIDs[index];
+                layer = it->second.Texture.LayerByIndex[index];
+                width = it->second.Texture.Width;
+                height = it->second.Texture.Height;
+                helper = &it->second.LastVariant;
+                return;
+            }
         }
 
         u32 widthLog2 = (texParam >> 20) & 0x7;
         u32 heightLog2 = (texParam >> 23) & 0x7;
-        u32 width = 8 << widthLog2;
-        u32 height = 8 << heightLog2;
+        width = 8 << widthLog2;
+        height = 8 << heightLog2;
 
         u32 addr = (texParam & 0xFFFF) * 8;
 
@@ -249,6 +295,90 @@ public:
             entry.TexPalHash = MaskedHash(gpu.VRAMFlat_TexPal, sizeof(gpu.VRAMFlat_TexPal),
                 entry.TexPalStart, entry.TexPalSize);
 
+        int oldWidth = width;
+        int oldHeight = height;
+        unsigned char* imageData = (unsigned char*)DecodingBuffer;
+        Plugins::TextureEntry* texturePtr = nullptr;
+        if (textureReplacementEnabled) {
+            std::ostringstream oss0;
+            oss0 << "MM2-";
+            for (int i = 0; i < 2; i++)
+            {
+                if (entry.TextureRAMSize[i])
+                    oss0 << static_cast<char32_t>(entry.TextureHash[i]);
+            }
+            std::string newIdentifierWithoutPal = oss0.str();
+            oss0 << "-";
+            oss0 << palBase;
+            std::string newIdentifierWithPal = oss0.str();
+
+            std::ostringstream oss1;
+            for (int i = 0; i < 2; i++)
+            {
+                if (entry.TextureRAMSize[i])
+                    oss1 << static_cast<char32_t>(KHLEG_XXH3_64bits(&gpu.VRAMFlat_Texture[entry.TextureRAMStart[i]], entry.TextureRAMSize[i]));
+            }
+            std::string oldIdentifierWithoutPal = oss1.str();
+            oss1 << "-";
+            oss1 << palBase;
+            std::string oldIdentifierWithPal = oss1.str();
+
+            std::filesystem::path _assetsFolderPath = GamePlugin->gameAssetsFolderPath();
+            std::filesystem::path texturesFolder = _assetsFolderPath / "textures";
+
+            Plugins::TextureEntry& newTextureWithPal = GamePlugin->textureById(newIdentifierWithPal);
+            Plugins::TextureEntry& newTextureWithoutPal = GamePlugin->textureById(newIdentifierWithoutPal);
+
+            Plugins::TextureEntry& oldTextureWithPal = GamePlugin->textureById(oldIdentifierWithPal);
+            Plugins::TextureEntry& oldTextureWithoutPal = GamePlugin->textureById(oldIdentifierWithoutPal);
+
+            int channels = 4;
+            int r_width, r_height, r_channels;
+            imageData = nullptr;
+
+            Plugins::TextureEntry* textures[] = {
+                &newTextureWithPal, &newTextureWithoutPal, &oldTextureWithPal, &oldTextureWithoutPal,
+            };
+            for (int i = 0; i < sizeof(textures) / sizeof(textures[0]); ++i) {
+                Plugins::TextureEntry* texture = textures[i];
+                auto& scene = texture->getNextScene();
+                const char* path = scene.fullPath.c_str();
+                if (imageData == nullptr && strlen(path) > 0) {
+                    imageData = Texreplace::LoadTextureFromFile(path, &r_width, &r_height, &r_channels);
+                    if (imageData != nullptr) {
+                        if (isValidWidthOrHeight(r_width) && isValidWidthOrHeight(r_height)) {
+                            printf("Loading texture %s\n", path);
+                            width = r_width;
+                            height = r_height;
+                            texturePtr = texture;
+                            break;
+                        }
+                        else {
+                            GamePlugin->errorLog("Failed to load texture %s: size must be a power of two", path);
+                            imageData = nullptr;
+                        }
+                    }
+                }
+            }
+
+            if (imageData == nullptr) {
+                imageData = (unsigned char*)DecodingBuffer;
+
+                if (GamePlugin->shouldExportTextures()) {
+                    std::string fullPathTmp = GamePlugin->tmpTextureFilePath(oldIdentifierWithPal);
+                    const char* pathTmp = fullPathTmp.c_str();
+
+                    printf("Saving texture %s\n", pathTmp);
+                    Texreplace::ExportTextureAsFile(imageData, pathTmp, width, height, channels);
+                }
+            }
+
+            widthLog2 = RightmostBit(width) - 3;
+            heightLog2 = RightmostBit(height) - 3;
+            entry.WidthLog2 = widthLog2;
+            entry.HeightLog2 = heightLog2;
+        }
+
         auto& texArrays = TexArrays[widthLog2][heightLog2];
         auto& freeTextures = FreeTextures[widthLog2][heightLog2];
 
@@ -257,7 +387,7 @@ public:
             texArrays.resize(texArrays.size()+1);
             TexHandleT& array = texArrays[texArrays.size()-1];
 
-            u32 layers = std::min<u32>((8*1024*1024) / (width*height*4), 64);
+            u32 layers = 1;
 
             // allocate new array texture
             //printf("allocating new layer set for %d %d %d %d\n", width, height, texArrays.size()-1, array.ImageDescriptor);
@@ -265,21 +395,66 @@ public:
 
             for (u32 i = 0; i < layers; i++)
             {
-                freeTextures.push_back(TexArrayEntry{array, i});
+                freeTextures.push_back(TexArrayEntry{{{0, array}}, {{0, i}}, width, height});
             }
         }
 
-        TexArrayEntry storagePlace = freeTextures[freeTextures.size()-1];
-        freeTextures.pop_back();
+        if (it != Cache.end()) {
+            TexArrayEntry newStoragePlace = freeTextures[freeTextures.size()-1];
+            freeTextures.pop_back();
 
-        entry.Texture = storagePlace;
+            TexArrayEntry& storagePlace = it->second.Texture;
 
-        TexLoader.UploadTexture(storagePlace.TextureID, width, height, storagePlace.Layer, DecodingBuffer);
-        //printf("using storage place %d %d | %d %d (%d)\n", width, height, storagePlace.TexArrayIdx, storagePlace.LayerIdx, array.ImageDescriptor);
+            u32 currentIdx = storagePlace.CurrentIndex;
+            if (storagePlace.TextureIDs.find(currentIdx) != storagePlace.TextureIDs.end()) {
+                TexLoader.DeleteTexture(storagePlace.TextureIDs[currentIdx]);
+            }
 
-        textureHandle = storagePlace.TextureID;
-        layer = storagePlace.Layer;
-        helper = &Cache.emplace(std::make_pair(key, entry)).first->second.LastVariant;
+            u32 layers = 1;
+            auto array = TexLoader.GenerateTexture(width, height, layers);
+            storagePlace.TextureIDs[currentIdx] = array;
+            storagePlace.Countdown = texturePtr == nullptr ? 0 : (texturePtr->getLastScene().time + 1);
+            storagePlace.TimePerIndex[currentIdx] = storagePlace.Countdown;
+            storagePlace.LayerByIndex[currentIdx] = newStoragePlace.LayerByIndex[0];
+            storagePlace.WasReplacementEnabled = textureReplacementEnabled;
+            
+            entry.Texture = storagePlace;
+
+            TexLoader.UploadTexture(storagePlace.TextureIDs[currentIdx], width, height,
+                    storagePlace.LayerByIndex[currentIdx], imageData);
+
+            if (imageData != (unsigned char*)DecodingBuffer) {
+                free(imageData);
+            }
+
+            textureHandle = storagePlace.TextureIDs[currentIdx];
+            layer = storagePlace.LayerByIndex[currentIdx];
+            helper = &Cache.emplace(std::make_pair(key, entry)).first->second.LastVariant;
+        }
+        else {
+            TexArrayEntry storagePlace = freeTextures[freeTextures.size()-1];
+            freeTextures.pop_back();
+
+            storagePlace.TotalScenes = texturePtr == nullptr ? 1 : (texturePtr->totalScenes);
+
+            storagePlace.Width = oldWidth;
+            storagePlace.Height = oldHeight;
+            storagePlace.Countdown = texturePtr == nullptr ? 0 : (texturePtr->getLastScene().time + 1);
+            storagePlace.TimePerIndex[storagePlace.CurrentIndex] = storagePlace.Countdown;
+            storagePlace.WasReplacementEnabled = textureReplacementEnabled;
+            
+            entry.Texture = storagePlace;
+
+            TexLoader.UploadTexture(storagePlace.TextureIDs[storagePlace.CurrentIndex], width, height,
+                    storagePlace.LayerByIndex[storagePlace.CurrentIndex], imageData);
+
+            if (imageData != (unsigned char*)DecodingBuffer)
+                free(imageData);
+
+            textureHandle = storagePlace.TextureIDs[storagePlace.CurrentIndex];
+            layer = storagePlace.LayerByIndex[storagePlace.CurrentIndex];
+            helper = &Cache.emplace(std::make_pair(key, entry)).first->second.LastVariant;
+        }
     }
 
     void Reset()
@@ -299,8 +474,15 @@ public:
 private:
     struct TexArrayEntry
     {
-        TexHandleT TextureID;
-        u32 Layer;
+        std::map<u32, TexHandleT> TextureIDs;
+        std::map<u32, u32> LayerByIndex;
+        u32 Width;
+        u32 Height;
+        std::map<u32, u32> TimePerIndex;
+        u32 TotalScenes;
+        u32 CurrentIndex;
+        u32 Countdown;
+        bool WasReplacementEnabled;
     };
 
     struct TexCacheEntry

@@ -23,6 +23,9 @@
 #include <array>
 #include <optional>
 
+// [KHMM] compositor takes a game Plugin to source a custom composite shader — from KHMelonMix src/GPU_OpenGL.h
+#include "plugins/Plugin.h"
+
 namespace melonDS
 {
 class GPU;
@@ -32,7 +35,7 @@ class Renderer3D;
 class GLCompositor
 {
 public:
-    static std::optional<GLCompositor> New() noexcept;
+    static std::optional<GLCompositor> New(Plugins::Plugin* plugin) noexcept; // [KHMM] plugin param
     GLCompositor(const GLCompositor&) = delete;
     GLCompositor& operator=(const GLCompositor&) = delete;
     GLCompositor(GLCompositor&&) noexcept;
@@ -47,7 +50,7 @@ public:
     void SetOutputTexture(int buf, GLuint texture);
     void BindOutputTexture(int buf);
 private:
-    GLCompositor(GLuint CompShader) noexcept;
+    GLCompositor(GLuint CompShader, Plugins::Plugin* plugin) noexcept; // [KHMM] plugin param
     int Scale = 0;
     int ScreenH = 0, ScreenW = 0;
 
@@ -67,6 +70,12 @@ private:
     GLuint CompScreenInputTex = 0;
     std::array<GLuint, 2> CompScreenOutputTex {};
     std::array<GLuint, 2> CompScreenOutputFB {};
+
+    Plugins::Plugin* GamePlugin = nullptr; // [KHMM] active game plugin (custom composite shader)
+    // [KHMM] true only when the plugin actually supplied a custom composite shader.
+    // Gates the plugin's per-frame GL uniform/UBO updates so nothing plugin-specific
+    // (e.g. glMapBuffer) runs on the default shader path. Port-specific safety.
+    bool UsesPluginShader = false;
 };
 
 }

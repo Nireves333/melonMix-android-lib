@@ -40,6 +40,9 @@ add_library(core STATIC
     GPU3D_Soft.cpp
     GPU3D_Texcache.cpp
     GPU3D_Texcache.h
+    # [KHMM] texture replacement (HD textures/cutscenes) — from KHMelonMix src/CMakeLists.txt
+    GPU_Texreplace.cpp
+    GPU_Texreplace.h
     melonDLDI.h
     Mic.cpp
     NDS.cpp
@@ -75,6 +78,22 @@ add_library(core STATIC
     tiny-AES-c/aes.c
     xxhash/xxhash.c
 
+    # [KHMM] KH Melon Mix plugin system (Lua plugin excluded until the Lua chunk) — from KHMelonMix src/CMakeLists.txt
+    plugins/AudioUtils.cpp
+    plugins/Plugin.cpp
+    plugins/PluginMenuStrings.cpp
+    plugins/PluginManager.cpp
+    plugins/PluginKingdomHeartsDays.cpp
+    plugins/PluginKingdomHeartsReCoded.cpp
+    plugins/PluginHarvestMoonDsCute.cpp
+    plugins/PluginMetroidPrimeHunters.cpp
+    plugins/KingdomHeartsHDCollection.cpp
+    plugins/PluginJoystick.cpp  # [KHMM] Android no-op stub (SDL impl lives in desktop frontend)
+
+    # [KHMM] legacy xxhash used by the replacement-texture cache
+    xxhash_legacy/xxhash.c
+    xxhash_legacy/xxhash_legacy.c
+
     blip-buf/blip_buf.c)
 
 if (ENABLE_GDBSTUB)
@@ -88,6 +107,8 @@ endif()
 
 if (ENABLE_OGLRENDERER)
     target_sources(core PRIVATE
+        plugins/Plugin_GPU_OpenGL_shaders.h  # [KHMM] custom composite shaders
+
         GPU_OpenGL.cpp
         GPU_OpenGL_shaders.h
         GPU3D_OpenGL.cpp

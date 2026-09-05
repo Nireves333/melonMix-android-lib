@@ -63,6 +63,10 @@ struct Polygon
     u32 TexParam;
     u32 TexPalette;
 
+    // [KHMM] texture dims filled by texcache; used by plugin polygon-rewrite — from KHMelonMix src/GPU3D.h
+    u32 Width;
+    u32 Height;
+
     bool Degenerate;
 
     bool FacingView;

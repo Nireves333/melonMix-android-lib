@@ -51,7 +51,7 @@ public:
     void SetOutputTexture(int buffer, u32 texture) override;
     void BindOutputTexture(int buffer) override;
 
-    static std::unique_ptr<GLRenderer> New() noexcept;
+    static std::unique_ptr<GLRenderer> New(Plugins::Plugin* plugin) noexcept; // [KHMM] plugin param
 private:
     // Used by New()
     GLRenderer(GLCompositor&& compositor) noexcept;
@@ -161,6 +161,8 @@ private:
 
     GLuint MainFramebuffer {}, DownscaleFramebuffer {};
     u32 Framebuffer[256*192] {};
+
+    Plugins::Plugin* GamePlugin = nullptr; // [KHMM] active game plugin (polygon rewrite)
 };
 }
 #endif
