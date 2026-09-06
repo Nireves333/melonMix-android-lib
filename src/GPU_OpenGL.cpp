@@ -19,6 +19,7 @@
 #include "GPU_OpenGL.h"
 
 #include <assert.h>
+#include <chrono> // [KHMM-DBG] render timing
 #include <cstdio>
 #include <cstring>
 
@@ -30,6 +31,9 @@
 
 namespace melonDS
 {
+
+// [KHMM-DBG] definition of the GL-render time accumulator declared in GPU_OpenGL.h
+std::atomic<uint64_t> g_khGlRenderNanos{0};
 
 using namespace OpenGL;
 
@@ -68,6 +72,23 @@ GLCompositor::GLCompositor(GLuint compShader, Plugins::Plugin* plugin) noexcept 
     glUniform1i(screenTextureUniform, 0);
     GLuint _3dTextureUniform = glGetUniformLocation(CompShader, "_3DTex");
     glUniform1i(_3dTextureUniform, 1);
+
+    // [KHMM-DBG] when the plugin composite FS is active, also compile the stock nearest FS so
+    // RenderFrame can switch programs at runtime (composite-FS perf A/B). Shares kCompositorVS
+    // and the same texture interface, so it just needs its samplers + u3DScale location bound.
+    if (UsesPluginShader) {
+        if (OpenGL::CompileVertexFragmentProgram(CompShaderNearest,
+                kCompositorVS, kCompositorFS_Nearest,
+                "CompositorShaderNearest",
+                {{"vPosition", 0}, {"vTexcoord", 1}},
+                {{"oColor", 0}})) {
+            glUseProgram(CompShaderNearest);
+            glUniform1i(glGetUniformLocation(CompShaderNearest, "ScreenTex"), 0);
+            glUniform1i(glGetUniformLocation(CompShaderNearest, "_3DTex"), 1);
+            CompScaleLocNearest = glGetUniformLocation(CompShaderNearest, "u3DScale");
+            glUseProgram(CompShader);
+        }
+    }
 
     // all this mess is to prevent bleeding
 #define SETVERTEX(i, x, y, offset) \
@@ -142,6 +163,7 @@ GLCompositor::~GLCompositor()
     glDeleteBuffers(1, &CompVertexBufferID);
 
     glDeleteProgram(CompShader);
+    if (CompShaderNearest) glDeleteProgram(CompShaderNearest); // [KHMM-DBG]
 }
 
 
@@ -150,6 +172,9 @@ GLCompositor::GLCompositor(GLCompositor&& other) noexcept :
     ScreenH(other.ScreenH),
     ScreenW(other.ScreenW),
     CompScaleLoc(other.CompScaleLoc),
+    CompShaderNearest(other.CompShaderNearest), // [KHMM-DBG]
+    CompScaleLocNearest(other.CompScaleLocNearest), // [KHMM-DBG]
+    CompositeFSEnabled(other.CompositeFSEnabled), // [KHMM-DBG]
     CompVertices(other.CompVertices),
     CompShader(other.CompShader),
     CompVertexBufferID(other.CompVertexBufferID),
@@ -166,6 +191,7 @@ GLCompositor::GLCompositor(GLCompositor&& other) noexcept :
     other.CompVertexArrayID = {};
     other.CompVertexBufferID = {};
     other.CompShader = {};
+    other.CompShaderNearest = {}; // [KHMM-DBG]
 }
 
 GLCompositor& GLCompositor::operator=(GLCompositor&& other) noexcept
@@ -177,10 +203,15 @@ GLCompositor& GLCompositor::operator=(GLCompositor&& other) noexcept
         ScreenW = other.ScreenW;
         CompScaleLoc = other.CompScaleLoc;
         CompVertices = other.CompVertices;
+        CompScaleLocNearest = other.CompScaleLocNearest; // [KHMM-DBG]
+        CompositeFSEnabled = other.CompositeFSEnabled;   // [KHMM-DBG]
 
         // Clean up these resources before overwriting them
         glDeleteProgram(CompShader);
         CompShader = other.CompShader;
+
+        if (CompShaderNearest) glDeleteProgram(CompShaderNearest); // [KHMM-DBG]
+        CompShaderNearest = other.CompShaderNearest;
 
         glDeleteBuffers(1, &CompVertexBufferID);
         CompVertexBufferID = other.CompVertexBufferID;
@@ -203,6 +234,7 @@ GLCompositor& GLCompositor::operator=(GLCompositor&& other) noexcept
         other.CompVertexArrayID = {};
         other.CompVertexBufferID = {};
         other.CompShader = {};
+        other.CompShaderNearest = {}; // [KHMM-DBG]
     }
 
     return *this;
@@ -251,6 +283,7 @@ void GLCompositor::Stop(const GPU& gpu) noexcept
 
 void GLCompositor::RenderFrame(const GPU& gpu, Renderer3D& renderer) noexcept
 {
+    auto _khT0 = std::chrono::steady_clock::now(); // [KHMM-DBG]
     int backbuf = gpu.FrontBuffer ^ 1;
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, CompScreenOutputFB[backbuf]);
@@ -263,13 +296,18 @@ void GLCompositor::RenderFrame(const GPU& gpu, Renderer3D& renderer) noexcept
     glViewport(0, 0, ScreenW, ScreenH);
 
     // TODO: select more shaders (filtering, etc)
-    glUseProgram(CompShader);
-    glUniform1ui(CompScaleLoc, Scale);
+    // [KHMM-DBG] pick the plugin composite FS or the stock nearest FS at runtime. When the
+    // toggle is off (or no nearest program compiled) we fall back to CompShader unchanged.
+    bool usePlugin = UsesPluginShader && CompositeFSEnabled;
+    GLuint prog = (usePlugin || CompShaderNearest == 0) ? CompShader : CompShaderNearest;
+    GLuint scaleLoc = (prog == CompShader) ? CompScaleLoc : CompScaleLocNearest;
+    glUseProgram(prog);
+    glUniform1ui(scaleLoc, Scale);
 
     // [KHMM] refresh plugin-owned composite-shader uniforms each frame — only when the
     // plugin's custom shader is actually in use — from KHMelonMix src/GPU_OpenGL.cpp
-    if (UsesPluginShader) {
-        GamePlugin->gpuOpenGL_FS_updateVariables(CompShader);
+    if (usePlugin) {
+        GamePlugin->gpuOpenGL_FS_updateVariables(prog);
     }
 
     glActiveTexture(GL_TEXTURE0);
@@ -289,6 +327,11 @@ void GLCompositor::RenderFrame(const GPU& gpu, Renderer3D& renderer) noexcept
     glBindBuffer(GL_ARRAY_BUFFER, CompVertexBufferID);
     glBindVertexArray(CompVertexArrayID);
     glDrawArrays(GL_TRIANGLES, 0, 4*3);
+
+    // [KHMM-DBG] accumulate composite time
+    g_khGlRenderNanos.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - _khT0).count(),
+        std::memory_order_relaxed);
 }
 
 void GLCompositor::SetOutputTexture(int buf, GLuint texture)

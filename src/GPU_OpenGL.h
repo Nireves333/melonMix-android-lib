@@ -21,6 +21,8 @@
 #include "OpenGLSupport.h"
 
 #include <array>
+#include <atomic>
+#include <cstdint>
 #include <optional>
 
 // [KHMM] compositor takes a game Plugin to source a custom composite shader — from KHMelonMix src/GPU_OpenGL.h
@@ -28,6 +30,12 @@
 
 namespace melonDS
 {
+// [KHMM-DBG] accumulated GL 3D-render + composite time (ns) for the current frame. The GL render
+// runs INSIDE nds->RunFrame(), so the frontend can't time it directly; both GL render entry points
+// (GPU3D_OpenGL::RenderFrame and GLCompositor::RenderFrame) add here, and MelonInstance reads+resets
+// it each report window to split runframe into GL-render vs emulation. Temporary; grep [KHMM-DBG].
+extern std::atomic<uint64_t> g_khGlRenderNanos;
+
 class GPU;
 struct RenderSettings;
 class GLRenderer;
@@ -49,6 +57,9 @@ public:
     void RenderFrame(const GPU& gpu, Renderer3D& renderer) noexcept;
     void SetOutputTexture(int buf, GLuint texture);
     void BindOutputTexture(int buf);
+    // [KHMM-DBG] runtime composite-shader toggle for perf isolation: false draws with the stock
+    // nearest FS instead of the plugin composite FS (only meaningful when a plugin FS is active).
+    void SetCompositeFSEnabled(bool enabled) noexcept { CompositeFSEnabled = enabled; }
 private:
     GLCompositor(GLuint CompShader, Plugins::Plugin* plugin) noexcept; // [KHMM] plugin param
     int Scale = 0;
@@ -56,6 +67,13 @@ private:
 
     GLuint CompShader {};
     GLuint CompScaleLoc = 0;
+
+    // [KHMM-DBG] second compiled program = the stock nearest composite FS, so the plugin
+    // composite shader can be toggled at runtime (perf isolation) without a renderer reinit.
+    // Compiled only when the plugin supplied a custom FS; 0 otherwise (toggle then a no-op).
+    GLuint CompShaderNearest = 0;
+    GLuint CompScaleLocNearest = 0;
+    bool CompositeFSEnabled = true;
 
     GLuint CompVertexBufferID = 0;
     GLuint CompVertexArrayID = 0;

@@ -19,6 +19,7 @@
 #include "GPU3D_OpenGL.h"
 
 #include <assert.h>
+#include <chrono> // [KHMM-DBG] render timing
 #include <stdio.h>
 #include <string.h>
 #include "NDS.h"
@@ -1171,6 +1172,16 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
 
 void GLRenderer::RenderFrame(GPU& gpu)
 {
+    // [KHMM-DBG] accumulate 3D-render time (RAII: covers all exit paths) into the shared counter
+    struct KhRenderTimer {
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        ~KhRenderTimer() {
+            g_khGlRenderNanos.fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(),
+                std::memory_order_relaxed);
+        }
+    } _khRenderTimer;
+
     CurShaderID = -1;
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);

@@ -21,6 +21,8 @@
 #define CUTSCENE_SKIP_START_FRAMES_COUNT 40
 #define CUTSCENE_SKIP_INTERVAL_FRAMES_COUNT 40
 
+#include <atomic>
+#include <cstdint>
 #include <functional>
 #include <math.h>
 #include <filesystem>
@@ -410,6 +412,12 @@ public:
     virtual void setAspectRatio(float aspectRatio);
     virtual void setInternalResolutionScale(int scale);
 
+    // [KHMM-DBG] public accessors for the perf-instrumentation members below (which are
+    // protected). Let the Android frontend gate the polygon-rewrite hook at runtime and read
+    // the per-window polygon count. Temporary; grep [KHMM-DBG] to remove.
+    void debugSetApplyPolygonChanges(bool value) { ApplyPolygonChanges = value; }
+    uint32_t debugTakePolyHookCalls() { return DebugPolyHookCalls.exchange(0, std::memory_order_relaxed); }
+
     void _superLoadConfigs(
         std::function<bool(std::string)> getBoolConfig,
         std::function<int(std::string)> getIntConfig,
@@ -485,6 +493,13 @@ protected:
 
     int CameraSensitivity = 0;
     bool EnhancedGraphics = true;
+    // [KHMM-DBG] perf instrumentation (temporary; grep [KHMM-DBG] to remove). ApplyPolygonChanges
+    // lets the frontend disable the per-polygon rewrite hook at runtime without touching
+    // EnhancedGraphics (so the composite FS / shape build keep running while we isolate the
+    // hook's CPU cost). DebugPolyHookCalls counts hook invocations (= polygons submitted to the
+    // renderer) so the frontend can log polys/frame and see if the widescreen FOV inflates geometry.
+    bool ApplyPolygonChanges = true;
+    std::atomic<uint32_t> DebugPolyHookCalls{0};
     bool SingleScreenMode = true;
     bool AutomaticallyMapJoysticks = false;
     bool JoystickDefaultsApplied = false;

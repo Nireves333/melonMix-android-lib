@@ -201,6 +201,14 @@ if (NOT MSVC)
 
     target_compile_options(core PUBLIC -fwrapv)
 
+    # [KHMM] PERF: this core sets no optimization level, so an Android Studio *debug* build (AGP
+    # maps debug -> CMAKE_BUILD_TYPE=Debug, and AGP strips -O flags from cppFlags) compiled the
+    # whole emulation core at clang's -O0 default -> ~3.5x slower emulation than a Release build
+    # (measured on RG505: emu 38ms vs stock ~10ms, uniform across interpreter AND JIT). Force -O3
+    # on the core target directly (CMake-level, unaffected by AGP flag stripping) so our dev builds
+    # emulate at full speed. Harmless under Release (already -O3).
+    target_compile_options(core PRIVATE -O3)
+
     target_compile_options(core PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>")
     # These warnings are excessive, and are only triggered in the ARMJIT code
     # (which is fundamentally non-portable, so this is fine)
