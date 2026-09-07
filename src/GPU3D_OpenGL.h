@@ -39,7 +39,7 @@ public:
     [[nodiscard]] bool GetBetterPolygons() const noexcept { return BetterPolygons; }
     [[nodiscard]] int GetScaleFactor() const noexcept { return ScaleFactor; }
 
-    // [KHMM-DBG] forward the runtime composite-FS toggle to the compositor (perf isolation)
+    // [KHMM] forward the runtime enhanced-graphics composite gate to the compositor
     void SetCompositeFSEnabled(bool enabled) noexcept { CurGLCompositor.SetCompositeFSEnabled(enabled); }
 
     void VCount144(GPU& gpu) override {};

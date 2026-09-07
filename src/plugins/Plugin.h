@@ -301,7 +301,6 @@ public:
     virtual void onGamePauseMenuConfirmPressed() {}
     virtual void onGamePauseMenuCancelPressed() {}
     virtual void onGamePauseMenuOverlayHidden() {}
-    virtual int debugPauseScreenType() { return -1; } // [KHMM-DBG] raw pause-type byte for the perf log
 
     void pauseReplacementCutsceneThroughPauseMenu();
     void resumeReplacementCutsceneThroughPauseMenu();
@@ -413,12 +412,10 @@ public:
     virtual void setAspectRatio(float aspectRatio);
     virtual void setInternalResolutionScale(int scale);
 
-    // [KHMM-DBG] public accessors for the perf-instrumentation members below (which are
-    // protected). Let the Android frontend gate the polygon-rewrite hook at runtime and read
-    // the per-window polygon count. Temporary; grep [KHMM-DBG] to remove.
-    void debugSetApplyPolygonChanges(bool value) { ApplyPolygonChanges = value; }
-    uint32_t debugTakePolyHookCalls() { return DebugPolyHookCalls.exchange(0, std::memory_order_relaxed); }
-    uint32_t debugShapeCount3D() { return (uint32_t) current3DShapes.size(); }
+    // [KHMM] runtime gate for the per-polygon rewrite hook (Android port): the frontend sets
+    // this each frame from the user's enhanced-graphics setting, so toggling mid-session
+    // cleanly falls back to stock geometry without touching EnhancedGraphics or reloading.
+    void setApplyPolygonChanges(bool value) { ApplyPolygonChanges = value; }
 
     void _superLoadConfigs(
         std::function<bool(std::string)> getBoolConfig,
@@ -495,13 +492,9 @@ protected:
 
     int CameraSensitivity = 0;
     bool EnhancedGraphics = true;
-    // [KHMM-DBG] perf instrumentation (temporary; grep [KHMM-DBG] to remove). ApplyPolygonChanges
-    // lets the frontend disable the per-polygon rewrite hook at runtime without touching
-    // EnhancedGraphics (so the composite FS / shape build keep running while we isolate the
-    // hook's CPU cost). DebugPolyHookCalls counts hook invocations (= polygons submitted to the
-    // renderer) so the frontend can log polys/frame and see if the widescreen FOV inflates geometry.
+    // [KHMM] runtime gate for the per-polygon rewrite hook, set per frame by the Android
+    // frontend from the enhanced-graphics setting (see setApplyPolygonChanges above)
     bool ApplyPolygonChanges = true;
-    std::atomic<uint32_t> DebugPolyHookCalls{0};
     bool SingleScreenMode = true;
     bool AutomaticallyMapJoysticks = false;
     bool JoystickDefaultsApplied = false;

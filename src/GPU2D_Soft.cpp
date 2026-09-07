@@ -180,8 +180,7 @@ void SoftRenderer::Kh2DDecideSkip(Unit* unit)
     u32 dispmode = (unit->DispCnt >> 16) & (num ? 0x1 : 0x3);
     bool midFrameWrite = unit->KhMidFrameRegWrite;
     unit->KhMidFrameRegWrite = false;
-    bool gateOk = Kh2DSkipEnabled
-        && dispmode <= 1
+    bool gateOk = dispmode <= 1
         && !(num == 0 && ((unit->CaptureCnt & (1u << 31)) || unit->CaptureLatch))
         && unit->BGMosaicSize[0] == 0 && unit->BGMosaicSize[1] == 0
         && unit->OBJMosaicSize[0] == 0 && unit->OBJMosaicSize[1] == 0
@@ -190,15 +189,6 @@ void SoftRenderer::Kh2DDecideSkip(Unit* unit)
     bool hashSame = h == Kh2DRegHash[num];
     bool inputsSame = gateOk && !midFrameWrite && hashSame && !vramChanged;
     Kh2DRegHash[num] = h;
-
-    // [KHMM-DBG] why-not-static counters for the perf log (remove with the rest of KHMM-DBG)
-    if (!inputsSame)
-    {
-        if (!gateOk) Kh2DBlockReasons[num][0]++;
-        if (midFrameWrite) Kh2DBlockReasons[num][1]++;
-        if (!hashSame) Kh2DBlockReasons[num][2]++;
-        if (vramChanged) Kh2DBlockReasons[num][3]++;
-    }
 
     if (inputsSame)
     {
@@ -213,8 +203,6 @@ void SoftRenderer::Kh2DDecideSkip(Unit* unit)
     // >= 2: the two identical-input frames before this one filled both double buffers
     // with this exact image, so the 2-frames-old buffer this frame would reuse matches
     Kh2DSkipUnit[num] = Kh2DStaticFrames[num] >= 2;
-    if (Kh2DSkipUnit[num])
-        Kh2DSkippedFrames[num]++;
 }
 
 void SoftRenderer::DrawScanline(u32 line, Unit* unit)

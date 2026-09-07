@@ -73,7 +73,6 @@ public:
     void onGamePauseMenuConfirmPressed() override;
     void onGamePauseMenuCancelPressed() override;
     void onGamePauseMenuOverlayHidden() override;
-    int debugPauseScreenType() override; // [KHMM-DBG] raw pause-type byte for the perf log
     std::string localizationFilePath(std::string language) override;
     std::filesystem::path patchReplacementCutsceneIfNeeded(CutsceneEntry* cutscene, std::filesystem::path folderPath);
     bool isUnskippableMobiCutscene(CutsceneEntry* cutscene) override;

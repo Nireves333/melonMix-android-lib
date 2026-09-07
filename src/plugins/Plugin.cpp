@@ -209,9 +209,8 @@ bool Plugin::gpuOpenGL_applyChangesToPolygonVertex(int resolutionScale, s32 scal
 }
 
 bool Plugin::gpuOpenGL_applyChangesToPolygon(int resolutionScale, s32 scaledPositions[10][2], melonDS::Polygon* polygon) {
-    DebugPolyHookCalls.fetch_add(1, std::memory_order_relaxed); // [KHMM-DBG] count polygons submitted
-    bool disable = !EnhancedGraphics || !ApplyPolygonChanges;   // [KHMM-DBG] runtime hook gate
-    if (disable) {
+    // [KHMM] runtime hook gate (Android port: ApplyPolygonChanges follows the enhanced-graphics setting)
+    if (!EnhancedGraphics || !ApplyPolygonChanges) {
         return false;
     }
 

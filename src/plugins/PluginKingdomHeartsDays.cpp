@@ -3048,13 +3048,6 @@ bool PluginKingdomHeartsDays::isSkipPauseScreenType()
                                            PAUSE_SCREEN_WITH_SKIP_VALUE_JP, PAUSE_SCREEN_WITH_SKIP_VALUE_JP_REV1)) != 0;
 }
 
-// [KHMM-DBG] expose the raw pause-type byte for the perf log (verify the bit mapping on device)
-int PluginKingdomHeartsDays::debugPauseScreenType()
-{
-    return nds->ARM7Read8(getAnyByCart(PAUSE_SCREEN_TYPE_ADDRESS_US, PAUSE_SCREEN_TYPE_ADDRESS_EU,
-                                       PAUSE_SCREEN_TYPE_ADDRESS_JP, PAUSE_SCREEN_TYPE_ADDRESS_JP_REV1));
-}
-
 std::vector<std::string> PluginKingdomHeartsDays::gamePauseMenuButtonLabels()
 {
     const Plugins::MenuStrings& strings = Plugins::menuStrings(cutsceneMenuLanguage());

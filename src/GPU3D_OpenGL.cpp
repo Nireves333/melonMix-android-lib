@@ -19,7 +19,6 @@
 #include "GPU3D_OpenGL.h"
 
 #include <assert.h>
-#include <chrono> // [KHMM-DBG] render timing
 #include <stdio.h>
 #include <string.h>
 #include "NDS.h"
@@ -1250,27 +1249,6 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
 
 void GLRenderer::RenderFrame(GPU& gpu)
 {
-    // [KHMM-DBG] accumulate 3D-render time (RAII: covers all exit paths) into the shared counter
-    struct KhRenderTimer {
-        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-        ~KhRenderTimer() {
-            g_khGlRenderNanos.fetch_add(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(),
-                std::memory_order_relaxed);
-        }
-    } _khRenderTimer;
-
-    // [KHMM-DBG] fine-split section timer: accumulates elapsed time into one detail bucket
-    auto _khSec = std::chrono::steady_clock::now();
-    auto _khMark = [&_khSec](KhGlDetail bucket) {
-        auto now = std::chrono::steady_clock::now();
-        g_khGlDetailNanos[bucket].fetch_add(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - _khSec).count(),
-            std::memory_order_relaxed);
-        _khSec = now;
-    };
-    g_khGlScale.store(ScaleFactor, std::memory_order_relaxed);
-
     // [KHMM] external code (compositor, frontend) touched GL state since last frame
     khInvalidateGLState();
 
@@ -1329,13 +1307,11 @@ void GLRenderer::RenderFrame(GPU& gpu)
     ShaderConfig.uFogOffset = gpu.GPU3D.RenderFogOffset;
     ShaderConfig.uFogShift = gpu.GPU3D.RenderFogShift;
 
-    _khSec = std::chrono::steady_clock::now(); // [KHMM-DBG] skip the uniform-fill CPU prep above
     glBindBuffer(GL_UNIFORM_BUFFER, ShaderConfigUBO);
     // [KHMM] orphan the UBO on map so the CPU never stalls on the GPU still reading last frame's copy
     void* unibuf = glMapBufferRange(GL_UNIFORM_BUFFER, 0, sizeof(ShaderConfig), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
     if (unibuf) memcpy(unibuf, &ShaderConfig, sizeof(ShaderConfig));
     glUnmapBuffer(GL_UNIFORM_BUFFER);
-    _khMark(KH_GL_UBO); // [KHMM-DBG]
 
     // SUCKY!!!!!!!!!!!!!!!!!!
     // TODO: detect when VRAM blocks are modified!
@@ -1354,7 +1330,6 @@ void GLRenderer::RenderFrame(GPU& gpu)
 
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i*128, 1024, 128, GL_RED_INTEGER, GL_UNSIGNED_BYTE, vram);
     }
-    _khMark(KH_GL_VRAMTEX); // [KHMM-DBG]
 
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, TexPalMemID[TexUploadFlip]); // [KHMM] double-buffered
@@ -1386,7 +1361,6 @@ void GLRenderer::RenderFrame(GPU& gpu)
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i*8, 1024, 8, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, tempBuffer);
     }
     free(tempBuffer);
-    _khMark(KH_GL_PAL); // [KHMM-DBG]
 
     glDisable(GL_SCISSOR_TEST);
     glEnable(GL_DEPTH_TEST);
@@ -1439,7 +1413,6 @@ void GLRenderer::RenderFrame(GPU& gpu)
         u32 flags = 0;
         if (gpu.GPU3D.RenderPolygonRAM[0]->WBuffer) flags |= RenderFlag_WBuffer;
 
-        _khSec = std::chrono::steady_clock::now(); // [KHMM-DBG] clear pass above stays untimed (residual)
         int npolys = 0;
         int firsttrans = -1;
         for (u32 i = 0; i < gpu.GPU3D.RenderNumPolygons; i++)
@@ -1466,10 +1439,8 @@ void GLRenderer::RenderFrame(GPU& gpu)
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(IndexBuffer), nullptr, GL_DYNAMIC_DRAW); // [KHMM] orphan
         glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, NumIndices * 2, IndexBuffer);
         glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, EdgeIndicesOffset * 2, NumEdgeIndices * 2, IndexBuffer + EdgeIndicesOffset);
-        _khMark(KH_GL_POLY); // [KHMM-DBG]
 
         RenderSceneChunk(gpu.GPU3D, 0, 192);
-        _khMark(KH_GL_DRAW); // [KHMM-DBG]
     }
 }
 

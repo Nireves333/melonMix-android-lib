@@ -19,7 +19,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <cmath>
-#include "KhPerfDetail.h" // [KHMM-DBG]
 #include "Platform.h"
 #include "NDS.h"
 #include "Mic.h"
@@ -853,8 +852,6 @@ void SPUCaptureUnit::Run(u32 cycles, s32 sample)
 
 void SPU::Mix(u32 spucycles)
 {
-    KhEmuScopedNs _khspu(KH_EMU_SPU); // [KHMM-DBG] audio channel mixing
-
     s32 left = 0, right = 0;
     s32 leftoutput = 0, rightoutput = 0;
 
