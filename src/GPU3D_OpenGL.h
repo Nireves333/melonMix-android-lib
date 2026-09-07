@@ -151,8 +151,11 @@ private:
 
     const u32 EdgeIndicesOffset = 2048 * 30;
 
-    GLuint TexMemID {};
-    GLuint TexPalMemID {};
+    // [KHMM] double-buffered: these are fully re-uploaded every frame while the GPU may still be
+    // reading last frame's copy — alternating textures avoids the driver stall/ghost-copy.
+    GLuint TexMemID[2] {};
+    GLuint TexPalMemID[2] {};
+    int TexUploadFlip = 0;
 
     int ScaleFactor {};
     bool BetterPolygons {};

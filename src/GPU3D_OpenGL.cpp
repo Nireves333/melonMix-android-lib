@@ -262,23 +262,30 @@ std::unique_ptr<GLRenderer> GLRenderer::New(Plugins::Plugin* plugin) noexcept //
 
     glGenBuffers(1, &result->PixelbufferID);
 
+    // [KHMM] two copies of each VRAM texture, alternated per frame (see TexUploadFlip)
     glActiveTexture(GL_TEXTURE0);
-    glGenTextures(1, &result->TexMemID);
-    glBindTexture(GL_TEXTURE_2D, result->TexMemID);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8UI, 1024, 512, 0, GL_RED_INTEGER, GL_UNSIGNED_BYTE, NULL);
+    glGenTextures(2, result->TexMemID);
+    for (int i = 0; i < 2; i++)
+    {
+        glBindTexture(GL_TEXTURE_2D, result->TexMemID[i]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8UI, 1024, 512, 0, GL_RED_INTEGER, GL_UNSIGNED_BYTE, NULL);
+    }
 
     glActiveTexture(GL_TEXTURE1);
-    glGenTextures(1, &result->TexPalMemID);
-    glBindTexture(GL_TEXTURE_2D, result->TexPalMemID);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB5_A1, 1024, 48, 0, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, NULL);
+    glGenTextures(2, result->TexPalMemID);
+    for (int i = 0; i < 2; i++)
+    {
+        glBindTexture(GL_TEXTURE_2D, result->TexPalMemID[i]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB5_A1, 1024, 48, 0, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, NULL);
+    }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -289,8 +296,8 @@ GLRenderer::~GLRenderer()
 {
     assert(glDeleteTextures != nullptr);
 
-    glDeleteTextures(1, &TexMemID);
-    glDeleteTextures(1, &TexPalMemID);
+    glDeleteTextures(2, TexMemID);   // [KHMM] double-buffered
+    glDeleteTextures(2, TexPalMemID);
 
     glDeleteFramebuffers(1, &MainFramebuffer);
     glDeleteFramebuffers(1, &DownscaleFramebuffer);
@@ -1182,6 +1189,17 @@ void GLRenderer::RenderFrame(GPU& gpu)
         }
     } _khRenderTimer;
 
+    // [KHMM-DBG] fine-split section timer: accumulates elapsed time into one detail bucket
+    auto _khSec = std::chrono::steady_clock::now();
+    auto _khMark = [&_khSec](KhGlDetail bucket) {
+        auto now = std::chrono::steady_clock::now();
+        g_khGlDetailNanos[bucket].fetch_add(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - _khSec).count(),
+            std::memory_order_relaxed);
+        _khSec = now;
+    };
+    g_khGlScale.store(ScaleFactor, std::memory_order_relaxed);
+
     CurShaderID = -1;
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -1237,15 +1255,19 @@ void GLRenderer::RenderFrame(GPU& gpu)
     ShaderConfig.uFogOffset = gpu.GPU3D.RenderFogOffset;
     ShaderConfig.uFogShift = gpu.GPU3D.RenderFogShift;
 
+    _khSec = std::chrono::steady_clock::now(); // [KHMM-DBG] skip the uniform-fill CPU prep above
     glBindBuffer(GL_UNIFORM_BUFFER, ShaderConfigUBO);
-    void* unibuf = glMapBufferRange(GL_UNIFORM_BUFFER, 0, sizeof(ShaderConfig), GL_MAP_WRITE_BIT);
+    // [KHMM] orphan the UBO on map so the CPU never stalls on the GPU still reading last frame's copy
+    void* unibuf = glMapBufferRange(GL_UNIFORM_BUFFER, 0, sizeof(ShaderConfig), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
     if (unibuf) memcpy(unibuf, &ShaderConfig, sizeof(ShaderConfig));
     glUnmapBuffer(GL_UNIFORM_BUFFER);
+    _khMark(KH_GL_UBO); // [KHMM-DBG]
 
     // SUCKY!!!!!!!!!!!!!!!!!!
     // TODO: detect when VRAM blocks are modified!
+    TexUploadFlip ^= 1; // [KHMM] alternate the double-buffered VRAM textures each frame
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, TexMemID);
+    glBindTexture(GL_TEXTURE_2D, TexMemID[TexUploadFlip]);
     for (int i = 0; i < 4; i++)
     {
         u32 mask = gpu.VRAMMap_Texture[i];
@@ -1258,9 +1280,10 @@ void GLRenderer::RenderFrame(GPU& gpu)
 
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i*128, 1024, 128, GL_RED_INTEGER, GL_UNSIGNED_BYTE, vram);
     }
+    _khMark(KH_GL_VRAMTEX); // [KHMM-DBG]
 
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, TexPalMemID);
+    glBindTexture(GL_TEXTURE_2D, TexPalMemID[TexUploadFlip]); // [KHMM] double-buffered
 
     u16* tempBuffer = (u16*) malloc(1024 * 8 * 2);
     for (int i = 0; i < 6; i++)
@@ -1289,6 +1312,7 @@ void GLRenderer::RenderFrame(GPU& gpu)
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i*8, 1024, 8, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, tempBuffer);
     }
     free(tempBuffer);
+    _khMark(KH_GL_PAL); // [KHMM-DBG]
 
     glDisable(GL_SCISSOR_TEST);
     glEnable(GL_DEPTH_TEST);
@@ -1341,6 +1365,7 @@ void GLRenderer::RenderFrame(GPU& gpu)
         u32 flags = 0;
         if (gpu.GPU3D.RenderPolygonRAM[0]->WBuffer) flags |= RenderFlag_WBuffer;
 
+        _khSec = std::chrono::steady_clock::now(); // [KHMM-DBG] clear pass above stays untimed (residual)
         int npolys = 0;
         int firsttrans = -1;
         for (u32 i = 0; i < gpu.GPU3D.RenderNumPolygons; i++)
@@ -1358,14 +1383,19 @@ void GLRenderer::RenderFrame(GPU& gpu)
 
         BuildPolygons(&PolygonList[0], npolys);
         glBindBuffer(GL_ARRAY_BUFFER, VertexBufferID);
+        // [KHMM] orphan the vertex/index buffers before the per-frame upload (avoid GPU-in-use stalls)
+        glBufferData(GL_ARRAY_BUFFER, sizeof(VertexBuffer), nullptr, GL_DYNAMIC_DRAW);
         glBufferSubData(GL_ARRAY_BUFFER, 0, NumVertices*7*4, VertexBuffer);
 
         // bind to access the index buffer
         glBindVertexArray(VertexArrayID);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(IndexBuffer), nullptr, GL_DYNAMIC_DRAW); // [KHMM] orphan
         glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, NumIndices * 2, IndexBuffer);
         glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, EdgeIndicesOffset * 2, NumEdgeIndices * 2, IndexBuffer + EdgeIndicesOffset);
+        _khMark(KH_GL_POLY); // [KHMM-DBG]
 
         RenderSceneChunk(gpu.GPU3D, 0, 192);
+        _khMark(KH_GL_DRAW); // [KHMM-DBG]
     }
 }
 

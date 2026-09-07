@@ -36,6 +36,14 @@ namespace melonDS
 // it each report window to split runframe into GL-render vs emulation. Temporary; grep [KHMM-DBG].
 extern std::atomic<uint64_t> g_khGlRenderNanos;
 
+// [KHMM-DBG] fine split of the GL time above, to locate the cost inside the render. Indices:
+// 0=UBO map/unmap  1=VRAM texture upload  2=palette convert+upload  3=polygon setup+buffer upload
+// 4=draw submission (RenderSceneChunk)  5=composite pass. g_khGlScale mirrors the active internal
+// resolution ScaleFactor so the perf log always states the res it measured. Temporary; grep [KHMM-DBG].
+enum KhGlDetail { KH_GL_UBO = 0, KH_GL_VRAMTEX, KH_GL_PAL, KH_GL_POLY, KH_GL_DRAW, KH_GL_COMP, KH_GL_DETAIL_COUNT };
+extern std::atomic<uint64_t> g_khGlDetailNanos[KH_GL_DETAIL_COUNT];
+extern std::atomic<int> g_khGlScale;
+
 class GPU;
 struct RenderSettings;
 class GLRenderer;
@@ -85,7 +93,9 @@ private:
     };
     std::array<CompVertex, 2*3*2> CompVertices {};
 
-    GLuint CompScreenInputTex = 0;
+    // [KHMM] double-buffered (indexed by backbuf): re-uploaded every frame while the previous
+    // composite draw may still be sampling it — alternating avoids the upload stall.
+    std::array<GLuint, 2> CompScreenInputTex {};
     std::array<GLuint, 2> CompScreenOutputTex {};
     std::array<GLuint, 2> CompScreenOutputFB {};
 

@@ -34,6 +34,8 @@ namespace melonDS
 
 // [KHMM-DBG] definition of the GL-render time accumulator declared in GPU_OpenGL.h
 std::atomic<uint64_t> g_khGlRenderNanos{0};
+std::atomic<uint64_t> g_khGlDetailNanos[KH_GL_DETAIL_COUNT]{};
+std::atomic<int> g_khGlScale{0};
 
 using namespace OpenGL;
 
@@ -129,14 +131,18 @@ GLCompositor::GLCompositor(GLuint compShader, Plugins::Plugin* plugin) noexcept 
 
     glGenFramebuffers(CompScreenOutputFB.size(), &CompScreenOutputFB[0]);
 
-    glGenTextures(1, &CompScreenInputTex);
+    // [KHMM] double-buffered input texture (indexed by backbuf)
+    glGenTextures(CompScreenInputTex.size(), &CompScreenInputTex[0]);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, CompScreenInputTex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI, 256*3 + 1, 192*2, 0, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, NULL);
+    for (GLuint tex : CompScreenInputTex)
+    {
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI, 256*3 + 1, 192*2, 0, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, NULL);
+    }
 
     glGenTextures(CompScreenOutputTex.size(), &CompScreenOutputTex[0]);
     for (GLuint i : CompScreenOutputTex)
@@ -156,7 +162,7 @@ GLCompositor::~GLCompositor()
     assert(glDeleteFramebuffers != nullptr);
 
     glDeleteFramebuffers(CompScreenOutputFB.size(), &CompScreenOutputFB[0]);
-    glDeleteTextures(1, &CompScreenInputTex);
+    glDeleteTextures(CompScreenInputTex.size(), &CompScreenInputTex[0]); // [KHMM] double-buffered
     glDeleteTextures(CompScreenOutputTex.size(), &CompScreenOutputTex[0]);
 
     glDeleteVertexArrays(1, &CompVertexArrayID);
@@ -219,7 +225,7 @@ GLCompositor& GLCompositor::operator=(GLCompositor&& other) noexcept
         glDeleteVertexArrays(1, &CompVertexArrayID);
         CompVertexArrayID = other.CompVertexArrayID;
 
-        glDeleteTextures(1, &CompScreenInputTex);
+        glDeleteTextures(CompScreenInputTex.size(), &CompScreenInputTex[0]); // [KHMM] double-buffered
         CompScreenInputTex = other.CompScreenInputTex;
 
         glDeleteTextures(CompScreenOutputTex.size(), &CompScreenOutputTex[0]);
@@ -311,7 +317,7 @@ void GLCompositor::RenderFrame(const GPU& gpu, Renderer3D& renderer) noexcept
     }
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, CompScreenInputTex);
+    glBindTexture(GL_TEXTURE_2D, CompScreenInputTex[backbuf]); // [KHMM] double-buffered
 
     if (gpu.Framebuffer[backbuf][0] && gpu.Framebuffer[backbuf][1])
     {
@@ -328,10 +334,11 @@ void GLCompositor::RenderFrame(const GPU& gpu, Renderer3D& renderer) noexcept
     glBindVertexArray(CompVertexArrayID);
     glDrawArrays(GL_TRIANGLES, 0, 4*3);
 
-    // [KHMM-DBG] accumulate composite time
-    g_khGlRenderNanos.fetch_add(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - _khT0).count(),
-        std::memory_order_relaxed);
+    // [KHMM-DBG] accumulate composite time (total + the fine-split comp bucket)
+    uint64_t _khCompNs = (uint64_t)
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - _khT0).count();
+    g_khGlRenderNanos.fetch_add(_khCompNs, std::memory_order_relaxed);
+    g_khGlDetailNanos[KH_GL_COMP].fetch_add(_khCompNs, std::memory_order_relaxed);
 }
 
 void GLCompositor::SetOutputTexture(int buf, GLuint texture)
