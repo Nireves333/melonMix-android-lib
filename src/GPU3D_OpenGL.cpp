@@ -29,6 +29,77 @@
 namespace melonDS
 {
 
+// [KHMM] GL state cache. The per-polygon passes below re-issue mostly-identical depth/stencil/
+// blend/colormask state thousands of times per frame, and each call has real driver cost on
+// Mali. These wrappers skip redundant sets. GL state is per-context, so a file-scope cache is
+// the right granularity; it is invalidated at RenderFrame entry because other code (compositor,
+// frontend) touches state between frames. Sentinels mark unknown state.
+namespace
+{
+
+struct KhGLStateCache
+{
+    GLenum DepthFunc = 0;
+    int DepthMask = -1;
+    GLenum StencilFunc = 0; GLint StencilRef = -1; long long StencilValueMask = -1;
+    GLenum StencilFail = 0, StencilZFail = 0, StencilZPass = 0;
+    long long StencilWriteMask = -1;
+    int BlendEnabled = -1;
+    int ColorMask[2] = {-1, -1};
+} khGL;
+
+inline void khInvalidateGLState() { khGL = KhGLStateCache(); }
+
+inline void khDepthFunc(GLenum f)
+{
+    if (khGL.DepthFunc != f) { khGL.DepthFunc = f; glDepthFunc(f); }
+}
+
+inline void khDepthMask(GLboolean m)
+{
+    if (khGL.DepthMask != (int)m) { khGL.DepthMask = (int)m; glDepthMask(m); }
+}
+
+inline void khStencilFunc(GLenum f, GLint ref, GLuint mask)
+{
+    if (khGL.StencilFunc != f || khGL.StencilRef != ref || khGL.StencilValueMask != (long long)mask)
+    {
+        khGL.StencilFunc = f; khGL.StencilRef = ref; khGL.StencilValueMask = (long long)mask;
+        glStencilFunc(f, ref, mask);
+    }
+}
+
+inline void khStencilOp(GLenum fail, GLenum zfail, GLenum zpass)
+{
+    if (khGL.StencilFail != fail || khGL.StencilZFail != zfail || khGL.StencilZPass != zpass)
+    {
+        khGL.StencilFail = fail; khGL.StencilZFail = zfail; khGL.StencilZPass = zpass;
+        glStencilOp(fail, zfail, zpass);
+    }
+}
+
+inline void khStencilMask(GLuint mask)
+{
+    if (khGL.StencilWriteMask != (long long)mask) { khGL.StencilWriteMask = (long long)mask; glStencilMask(mask); }
+}
+
+inline void khSetBlend(bool on)
+{
+    if (khGL.BlendEnabled != (int)on)
+    {
+        khGL.BlendEnabled = (int)on;
+        if (on) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    }
+}
+
+inline void khColorMaski(GLuint buf, GLboolean r, GLboolean g, GLboolean b, GLboolean a)
+{
+    int packed = (r?1:0) | (g?2:0) | (b?4:0) | (a?8:0);
+    if (khGL.ColorMask[buf] != packed) { khGL.ColorMask[buf] = packed; glColorMaski(buf, r, g, b, a); }
+}
+
+}
+
 bool GLRenderer::BuildRenderShader(u32 flags, const std::string& vs, const std::string& fs)
 {
     char shadername[32];
@@ -257,7 +328,7 @@ std::unique_ptr<GLRenderer> GLRenderer::New(Plugins::Plugin* plugin) noexcept //
     SetupDefaultTexParams(result->DownScaleBufferTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 192, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
-    glEnable(GL_BLEND);
+    khSetBlend(true);
     glBlendEquationSeparate(GL_FUNC_ADD, GL_MAX);
 
     glGenBuffers(1, &result->PixelbufferID);
@@ -826,10 +897,10 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
     UseRenderShader(flags);
     glLineWidth(1.0);
 
-    glColorMaski(1, GL_TRUE, GL_TRUE, fogenable, GL_FALSE);
+    khColorMaski(1, GL_TRUE, GL_TRUE, fogenable, GL_FALSE);
 
-    glDepthFunc(GL_LESS);
-    glDepthMask(GL_TRUE);
+    khDepthFunc(GL_LESS);
+    khDepthMask(GL_TRUE);
 
     glBindVertexArray(VertexArrayID);
 
@@ -841,16 +912,16 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
         if (rp->PolyData->Translucent) { i++; continue; }
 
         if (rp->PolyData->Attr & (1<<14))
-            glDepthFunc(GL_LEQUAL);
+            khDepthFunc(GL_LEQUAL);
         else
-            glDepthFunc(GL_LESS);
+            khDepthFunc(GL_LESS);
 
         u32 polyattr = rp->PolyData->Attr;
         u32 polyid = (polyattr >> 24) & 0x3F;
 
-        glStencilFunc(GL_ALWAYS, polyid, 0xFF);
-        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-        glStencilMask(0xFF);
+        khStencilFunc(GL_ALWAYS, polyid, 0xFF);
+        khStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        khStencilMask(0xFF);
 
         i += RenderPolygonBatch(i);
     }
@@ -862,15 +933,15 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
         UseRenderShader(flags | RenderFlag_Edge);
         glLineWidth(1.5);
 
-        glColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-        glColorMaski(1, GL_FALSE, GL_TRUE, GL_FALSE, GL_FALSE);
+        khColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        khColorMaski(1, GL_FALSE, GL_TRUE, GL_FALSE, GL_FALSE);
 
-        glDepthFunc(GL_ALWAYS);
-        glDepthMask(GL_FALSE);
+        khDepthFunc(GL_ALWAYS);
+        khDepthMask(GL_FALSE);
 
-        glStencilFunc(GL_ALWAYS, 0, 0xFF);
-        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-        glStencilMask(0);
+        khStencilFunc(GL_ALWAYS, 0, 0xFF);
+        khStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        khStencilMask(0);
 
         for (int i = 0; i < NumFinalPolys; )
         {
@@ -881,10 +952,10 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
             i += RenderPolygonEdgeBatch(i);
         }
 
-        glDepthMask(GL_TRUE);
+        khDepthMask(GL_TRUE);
     }*/
 
-    glEnable(GL_BLEND);
+    khSetBlend(true);
     glBlendEquationSeparate(GL_FUNC_ADD, GL_MAX);
 
     if (gpu3d.RenderDispCnt & (1<<3))
@@ -901,7 +972,7 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
 
         if ((gpu3d.RenderClearAttr1 & 0x001F0000) == 0)
         {
-            glDisable(GL_BLEND);
+            khSetBlend(false);
 
             for (int i = 0; i < NumFinalPolys; )
             {
@@ -913,15 +984,15 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
 
                     UseRenderShader(flags | RenderFlag_ShadowMask);
 
-                    glDisable(GL_BLEND);
-                    glColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-                    glColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-                    glDepthMask(GL_FALSE);
+                    khSetBlend(false);
+                    khColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                    khColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                    khDepthMask(GL_FALSE);
 
-                    glDepthFunc(GL_LESS);
-                    glStencilFunc(GL_EQUAL, 0xFF, 0xFF);
-                    glStencilOp(GL_KEEP, GL_INVERT, GL_KEEP);
-                    glStencilMask(0x01);
+                    khDepthFunc(GL_LESS);
+                    khStencilFunc(GL_EQUAL, 0xFF, 0xFF);
+                    khStencilOp(GL_KEEP, GL_INVERT, GL_KEEP);
+                    khStencilMask(0x01);
 
                     i += RenderPolygonBatch(i);
                 }
@@ -933,23 +1004,23 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
                     u32 polyid = (polyattr >> 24) & 0x3F;
 
                     if (polyattr & (1<<14))
-                        glDepthFunc(GL_LEQUAL);
+                        khDepthFunc(GL_LEQUAL);
                     else
-                        glDepthFunc(GL_LESS);
+                        khDepthFunc(GL_LESS);
 
                     if (needopaque)
                     {
                         UseRenderShader(flags);
 
-                        glDisable(GL_BLEND);
-                        glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                        glColorMaski(1, GL_TRUE, GL_TRUE, fogenable, GL_FALSE);
+                        khSetBlend(false);
+                        khColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                        khColorMaski(1, GL_TRUE, GL_TRUE, fogenable, GL_FALSE);
 
-                        glStencilFunc(GL_ALWAYS, polyid, 0xFF);
-                        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-                        glStencilMask(0xFF);
+                        khStencilFunc(GL_ALWAYS, polyid, 0xFF);
+                        khStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                        khStencilMask(0xFF);
 
-                        glDepthMask(GL_TRUE);
+                        khDepthMask(GL_TRUE);
 
                         RenderSinglePolygon(i);
                     }
@@ -966,30 +1037,30 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
                         u32 clrpolyid = (gpu3d.RenderClearAttr1 >> 24) & 0x3F;
                         if (polyid != clrpolyid) { i++; continue; }
 
-                        glEnable(GL_BLEND);
-                        glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                        glColorMaski(1, GL_FALSE, GL_FALSE, transfog, GL_FALSE);
+                        khSetBlend(true);
+                        khColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                        khColorMaski(1, GL_FALSE, GL_FALSE, transfog, GL_FALSE);
 
-                        glStencilFunc(GL_EQUAL, 0xFE, 0xFF);
-                        glStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
-                        glStencilMask(~(0x40|polyid)); // heheh
+                        khStencilFunc(GL_EQUAL, 0xFE, 0xFF);
+                        khStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
+                        khStencilMask(~(0x40|polyid)); // heheh
 
-                        if (polyattr & (1<<11)) glDepthMask(GL_TRUE);
-                        else                    glDepthMask(GL_FALSE);
+                        if (polyattr & (1<<11)) khDepthMask(GL_TRUE);
+                        else                    khDepthMask(GL_FALSE);
 
                         i += needopaque ? RenderSinglePolygon(i) : RenderPolygonBatch(i);
                     }
                     else
                     {
-                        glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                        glColorMaski(1, GL_FALSE, GL_FALSE, transfog, GL_FALSE);
+                        khColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                        khColorMaski(1, GL_FALSE, GL_FALSE, transfog, GL_FALSE);
 
-                        glStencilFunc(GL_EQUAL, 0xFF, 0xFE);
-                        glStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
-                        glStencilMask(~(0x40|polyid)); // heheh
+                        khStencilFunc(GL_EQUAL, 0xFF, 0xFE);
+                        khStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
+                        khStencilMask(~(0x40|polyid)); // heheh
 
-                        if (polyattr & (1<<11)) glDepthMask(GL_TRUE);
-                        else                    glDepthMask(GL_FALSE);
+                        if (polyattr & (1<<11)) khDepthMask(GL_TRUE);
+                        else                    khDepthMask(GL_FALSE);
 
                         i += needopaque ? RenderSinglePolygon(i) : RenderPolygonBatch(i);
                     }
@@ -998,8 +1069,8 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
                     i++;
             }
 
-            glEnable(GL_BLEND);
-            glStencilMask(0xFF);
+            khSetBlend(true);
+            khStencilMask(0xFF);
         }
 
         // pass 3: translucent pixels
@@ -1012,21 +1083,21 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
             {
                 // clear shadow bits in stencil buffer
 
-                glStencilMask(0x80);
+                khStencilMask(0x80);
                 glClear(GL_STENCIL_BUFFER_BIT);
 
                 // draw actual shadow mask
 
                 UseRenderShader(flags | RenderFlag_ShadowMask);
 
-                glDisable(GL_BLEND);
-                glColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-                glColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-                glDepthMask(GL_FALSE);
+                khSetBlend(false);
+                khColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                khColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                khDepthMask(GL_FALSE);
 
-                glDepthFunc(GL_LESS);
-                glStencilFunc(GL_ALWAYS, 0x80, 0x80);
-                glStencilOp(GL_KEEP, GL_REPLACE, GL_KEEP);
+                khDepthFunc(GL_LESS);
+                khStencilFunc(GL_ALWAYS, 0x80, 0x80);
+                khStencilOp(GL_KEEP, GL_REPLACE, GL_KEEP);
 
                 i += RenderPolygonBatch(i);
             }
@@ -1038,23 +1109,23 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
                 u32 polyid = (polyattr >> 24) & 0x3F;
 
                 if (polyattr & (1<<14))
-                    glDepthFunc(GL_LEQUAL);
+                    khDepthFunc(GL_LEQUAL);
                 else
-                    glDepthFunc(GL_LESS);
+                    khDepthFunc(GL_LESS);
 
                 if (needopaque)
                 {
                     UseRenderShader(flags);
 
-                    glDisable(GL_BLEND);
-                    glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                    glColorMaski(1, GL_TRUE, GL_TRUE, fogenable, GL_FALSE);
+                    khSetBlend(false);
+                    khColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                    khColorMaski(1, GL_TRUE, GL_TRUE, fogenable, GL_FALSE);
 
-                    glStencilFunc(GL_ALWAYS, polyid, 0xFF);
-                    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-                    glStencilMask(0xFF);
+                    khStencilFunc(GL_ALWAYS, polyid, 0xFF);
+                    khStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                    khStencilMask(0xFF);
 
-                    glDepthMask(GL_TRUE);
+                    khDepthMask(GL_TRUE);
 
                     RenderSinglePolygon(i);
                 }
@@ -1067,41 +1138,41 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
 
                 if (rp->PolyData->IsShadow)
                 {
-                    glDisable(GL_BLEND);
-                    glColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-                    glColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-                    glDepthMask(GL_FALSE);
-                    glStencilFunc(GL_EQUAL, polyid, 0x3F);
-                    glStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
-                    glStencilMask(0x80);
+                    khSetBlend(false);
+                    khColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                    khColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                    khDepthMask(GL_FALSE);
+                    khStencilFunc(GL_EQUAL, polyid, 0x3F);
+                    khStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
+                    khStencilMask(0x80);
 
                     RenderSinglePolygon(i);
 
-                    glEnable(GL_BLEND);
-                    glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                    glColorMaski(1, GL_FALSE, GL_FALSE, transfog, GL_FALSE);
+                    khSetBlend(true);
+                    khColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                    khColorMaski(1, GL_FALSE, GL_FALSE, transfog, GL_FALSE);
 
-                    glStencilFunc(GL_EQUAL, 0xC0|polyid, 0x80);
-                    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-                    glStencilMask(0x7F);
+                    khStencilFunc(GL_EQUAL, 0xC0|polyid, 0x80);
+                    khStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                    khStencilMask(0x7F);
 
-                    if (polyattr & (1<<11)) glDepthMask(GL_TRUE);
-                    else                    glDepthMask(GL_FALSE);
+                    if (polyattr & (1<<11)) khDepthMask(GL_TRUE);
+                    else                    khDepthMask(GL_FALSE);
 
                     i += RenderSinglePolygon(i);
                 }
                 else
                 {
-                    glEnable(GL_BLEND);
-                    glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                    glColorMaski(1, GL_FALSE, GL_FALSE, transfog, GL_FALSE);
+                    khSetBlend(true);
+                    khColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                    khColorMaski(1, GL_FALSE, GL_FALSE, transfog, GL_FALSE);
 
-                    glStencilFunc(GL_NOTEQUAL, 0x40|polyid, 0x7F);
-                    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-                    glStencilMask(0x7F);
+                    khStencilFunc(GL_NOTEQUAL, 0x40|polyid, 0x7F);
+                    khStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                    khStencilMask(0x7F);
 
-                    if (polyattr & (1<<11)) glDepthMask(GL_TRUE);
-                    else                    glDepthMask(GL_FALSE);
+                    if (polyattr & (1<<11)) khDepthMask(GL_TRUE);
+                    else                    khDepthMask(GL_FALSE);
 
                     i += needopaque ? RenderSinglePolygon(i) : RenderPolygonBatch(i);
                 }
@@ -1113,17 +1184,17 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
 
     if (gpu3d.RenderDispCnt & 0x00A0) // fog/edge enabled
     {
-        glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        glColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        khColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        khColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 
-        glEnable(GL_BLEND);
+        khSetBlend(true);
         glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
 
-        glDepthFunc(GL_ALWAYS);
-        glDepthMask(GL_FALSE);
-        glStencilFunc(GL_ALWAYS, 0, 0);
-        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-        glStencilMask(0);
+        khDepthFunc(GL_ALWAYS);
+        khDepthMask(GL_FALSE);
+        khStencilFunc(GL_ALWAYS, 0, 0);
+        khStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        khStencilMask(0);
         // While depth and stencil writing operations are disabled by the commands above, the fact that the same texture is used as both input and output results in undefined
         // behaviour, which manifests as visual artifacts on some devices. Depth/stencil texture is attached again after fog/edge rendering
         glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, 0, 0);
@@ -1199,6 +1270,9 @@ void GLRenderer::RenderFrame(GPU& gpu)
         _khSec = now;
     };
     g_khGlScale.store(ScaleFactor, std::memory_order_relaxed);
+
+    // [KHMM] external code (compositor, frontend) touched GL state since last frame
+    khInvalidateGLState();
 
     CurShaderID = -1;
 
@@ -1320,11 +1394,11 @@ void GLRenderer::RenderFrame(GPU& gpu)
 
     glViewport(0, 0, ScreenW, ScreenH);
 
-    glDisable(GL_BLEND);
-    glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glColorMaski(1, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glDepthMask(GL_TRUE);
-    glStencilMask(0xFF);
+    khSetBlend(false);
+    khColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    khColorMaski(1, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    khDepthMask(GL_TRUE);
+    khStencilMask(0xFF);
 
     // clear buffers
     // TODO: clear bitmap
@@ -1332,7 +1406,7 @@ void GLRenderer::RenderFrame(GPU& gpu)
     // (for example when alpha is 1..30)
     {
         glUseProgram(ClearShaderPlain);
-        glDepthFunc(GL_ALWAYS);
+        khDepthFunc(GL_ALWAYS);
 
         u32 r = gpu.GPU3D.RenderClearAttr1 & 0x1F;
         u32 g = (gpu.GPU3D.RenderClearAttr1 >> 5) & 0x1F;
@@ -1342,8 +1416,8 @@ void GLRenderer::RenderFrame(GPU& gpu)
         u32 polyid = (gpu.GPU3D.RenderClearAttr1 >> 24) & 0x3F;
         u32 z = ((gpu.GPU3D.RenderClearAttr2 & 0x7FFF) * 0x200) + 0x1FF;
 
-        glStencilFunc(GL_ALWAYS, 0xFF, 0xFF);
-        glStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
+        khStencilFunc(GL_ALWAYS, 0xFF, 0xFF);
+        khStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
 
         /*if (r) r = r*2 + 1;
         if (g) g = g*2 + 1;
