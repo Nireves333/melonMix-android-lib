@@ -172,7 +172,7 @@ struct alignas(16) ShapeData3D {
     int textureParamCount = 0;
     int negatedTextureParamCount = 0;
 
-    bool doesAttributeMatch(unsigned int polygonAttr) {
+    bool doesAttributeMatch(unsigned int polygonAttr) const {
         bool attrMatchEqual = false;
         bool attrMatchEqual2 = false;
         bool attrMatchNeg = false;
@@ -194,7 +194,7 @@ struct alignas(16) ShapeData3D {
         return (attrMatchEqual ? attrMatchEqual2 : true) && !attrMatchNeg;
     }
 
-    bool doesTextureParamMatch(unsigned int texParam) {
+    bool doesTextureParamMatch(unsigned int texParam) const {
         bool attrMatchEqual = false;
         bool attrMatchEqual2 = false;
         bool attrMatchNeg = false;
@@ -216,7 +216,7 @@ struct alignas(16) ShapeData3D {
         return (attrMatchEqual ? attrMatchEqual2 : true) && !attrMatchNeg;
     }
 
-    bool doesColorMatch(int* rgb)
+    bool doesColorMatch(const int* rgb) const
     {
         bool colorMatchEqual = false;
         bool colorMatchEqual2 = false;
@@ -241,21 +241,25 @@ struct alignas(16) ShapeData3D {
         return (colorMatchEqual ? !colorMatchEqual2 : true) && !colorMatchNeg;
     }
 
-    vec3 compute3DCoordinatesOf3DSquareShapeInVertexMode(float _x, float _y, float _z, float xCenter, float yCenter, unsigned int polygonAttr, unsigned int texParam, int* rgb, float resolutionScale, float aspectRatio)
+    vec3 compute3DCoordinatesOf3DSquareShapeInVertexMode(float _x, float _y, float _z, float xCenter, float yCenter, unsigned int polygonAttr, unsigned int texParam, const int* rgb, float resolutionScale, float aspectRatio) const
+    {
+        // attr/tex are invariant across a polygon's vertices; callers that have already matched
+        // them per-polygon call compute3DCoordinatesMatchedAttrTex directly to skip this
+        // redundant per-vertex re-check on the hot path (see gpuOpenGL_applyChangesToPolygon).
+        if (!doesAttributeMatch(polygonAttr)) {
+            return vec3{_x, _y, 0};
+        }
+        if (!doesTextureParamMatch(texParam)) {
+            return vec3{_x, _y, 0};
+        }
+        return compute3DCoordinatesMatchedAttrTex(_x, _y, _z, xCenter, yCenter, rgb, resolutionScale, aspectRatio);
+    }
+
+    // color match + bounding-box test + coordinate transform, assuming the caller has already
+    // confirmed this shape's attribute and texture-param filters match the polygon.
+    vec3 compute3DCoordinatesMatchedAttrTex(float _x, float _y, float _z, float xCenter, float yCenter, const int* rgb, float resolutionScale, float aspectRatio) const
     {
         float updated = 0;
-
-        bool loggerModeEnabled = (effects & 0x4) != 0;
-
-        bool attrMatch = doesAttributeMatch(polygonAttr);
-        if (!attrMatch) {
-            return vec3{_x, _y, updated};
-        }
-
-        bool texParamMatch = doesTextureParamMatch(texParam);
-        if (!texParamMatch) {
-            return vec3{_x, _y, updated};
-        }
 
         bool colorMatch = doesColorMatch(rgb);
         if (!colorMatch) {

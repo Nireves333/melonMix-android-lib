@@ -175,7 +175,7 @@ void Plugin::gpuOpenGL_FS_updateVariables(GLuint CompShader) {
     glUnmapBuffer(GL_UNIFORM_BUFFER);
 }
 
-bool Plugin::gpuOpenGL_applyChangesToPolygonVertex(int resolutionScale, s32 scaledPositions[10][2], melonDS::Polygon* polygon, float xCenter, float yCenter, ShapeData3D shape, int vertexIndex)
+bool Plugin::gpuOpenGL_applyChangesToPolygonVertex(int resolutionScale, s32 scaledPositions[10][2], melonDS::Polygon* polygon, float xCenter, float yCenter, const ShapeData3D& shape, int vertexIndex, bool assumeAttrTexMatched)
 {
     float aspectRatio = AspectRatio / (4.f / 3.f);
 
@@ -190,7 +190,11 @@ bool Plugin::gpuOpenGL_applyChangesToPolygonVertex(int resolutionScale, s32 scal
 
     bool loggerModeEnabled = (shape.effects & 0x4) != 0;
 
-    vec3 newValues = shape.compute3DCoordinatesOf3DSquareShapeInVertexMode(_x, _y, _z, xCenter, yCenter, polygon->Attr, polygon->TexParam, rgb, resolutionScale, aspectRatio);
+    // The caller may have already matched attr/tex once per polygon (invariant across vertices);
+    // skip re-checking them here on the per-vertex hot path.
+    vec3 newValues = assumeAttrTexMatched
+        ? shape.compute3DCoordinatesMatchedAttrTex(_x, _y, _z, xCenter, yCenter, rgb, resolutionScale, aspectRatio)
+        : shape.compute3DCoordinatesOf3DSquareShapeInVertexMode(_x, _y, _z, xCenter, yCenter, polygon->Attr, polygon->TexParam, rgb, resolutionScale, aspectRatio);
     if (newValues.z == 1) {
         if (loggerModeEnabled) {
             printf("Old Position: %f - %f -- Attribute: %d -- New Position: %f - %f\n", _x, _y, polygon->Attr, newValues.x, newValues.y);
@@ -214,7 +218,7 @@ bool Plugin::gpuOpenGL_applyChangesToPolygon(int resolutionScale, s32 scaledPosi
     float aspectRatio = AspectRatio / (4.f / 3.f);
 
     bool atLeastOneLog = false;
-    for (auto shape : current3DShapes)
+    for (const auto& shape : current3DShapes)
     {
         bool loggerModeEnabled = (shape.effects & 0x4) != 0;
 
@@ -257,7 +261,8 @@ bool Plugin::gpuOpenGL_applyChangesToPolygon(int resolutionScale, s32 scaledPosi
                             else
                             {
                                 for (int vIndex = 0; vIndex < polygon->NumVertices; vIndex++) {
-                                    gpuOpenGL_applyChangesToPolygonVertex(resolutionScale, scaledPositions, polygon, xCenter, yCenter, shape, vIndex);
+                                    // attr/tex already matched above for this shape -> skip re-check
+                                    gpuOpenGL_applyChangesToPolygonVertex(resolutionScale, scaledPositions, polygon, xCenter, yCenter, shape, vIndex, true);
                                 }
                             }
 
@@ -273,22 +278,29 @@ bool Plugin::gpuOpenGL_applyChangesToPolygon(int resolutionScale, s32 scaledPosi
         }
     }
 
+    // Vertex mode. Reordered shape-outer / vertex-inner so the per-polygon-invariant attr/tex
+    // filter runs ONCE per shape instead of once per vertex (the hot path: this hook runs for
+    // every polygon each frame). Behaviour matches the original vertex-outer form: each vertex is
+    // claimed by the first shape (in list order) that changes it -- vtxChanged[] enforces that.
     bool changed = false;
-    for (int vertexIndex = 0; vertexIndex < polygon->NumVertices; vertexIndex++)
+    bool vtxChanged[10] = { false }; // scaledPositions is [10][2]; NumVertices never exceeds it
+    for (const auto& shape : current3DShapes)
     {
-        for (auto shape : current3DShapes)
+        if ((shape.effects & 0x1) != 0)                              continue; // polygon mode -> loop above
+        if (!shape.doesAttributeMatch(polygon->Attr))               continue; // invariant across vertices
+        if (!shape.doesTextureParamMatch(polygon->TexParam))        continue;
+
+        bool loggerModeEnabled = (shape.effects & 0x4) != 0;
+        for (int vertexIndex = 0; vertexIndex < polygon->NumVertices; vertexIndex++)
         {
-            // vertex mode
-            if ((shape.effects & 0x1) == 0)
+            if (vtxChanged[vertexIndex]) continue; // already claimed by an earlier shape
+
+            bool thisChanged = gpuOpenGL_applyChangesToPolygonVertex(resolutionScale, scaledPositions, polygon, 0, 0, shape, vertexIndex, true);
+            if (thisChanged)
             {
-                bool loggerModeEnabled = (shape.effects & 0x4) != 0;
-                bool thisChanged = gpuOpenGL_applyChangesToPolygonVertex(resolutionScale, scaledPositions, polygon, 0, 0, shape, vertexIndex);
-                changed |= thisChanged;
-                atLeastOneLog = atLeastOneLog || (loggerModeEnabled && thisChanged);
-                if (thisChanged)
-                {
-                    break;
-                }
+                vtxChanged[vertexIndex] = true;
+                changed = true;
+                atLeastOneLog = atLeastOneLog || loggerModeEnabled;
             }
         }
     }

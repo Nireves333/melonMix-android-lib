@@ -191,7 +191,7 @@ public:
     virtual void gpuOpenGL_FS_initVariables(GLuint CompShader);
     virtual void gpuOpenGL_FS_updateVariables(GLuint CompShader);
 
-    virtual bool gpuOpenGL_applyChangesToPolygonVertex(int resolutionScale, s32 scaledPositions[10][2], melonDS::Polygon* polygon, float xCenter, float yCenter, ShapeData3D shape, int vertexIndex);
+    virtual bool gpuOpenGL_applyChangesToPolygonVertex(int resolutionScale, s32 scaledPositions[10][2], melonDS::Polygon* polygon, float xCenter, float yCenter, const ShapeData3D& shape, int vertexIndex, bool assumeAttrTexMatched = false);
     virtual bool gpuOpenGL_applyChangesToPolygon(int resolutionScale, s32 scaledPositions[10][2], melonDS::Polygon* polygon);
 
     void buildShapes();
@@ -417,6 +417,7 @@ public:
     // the per-window polygon count. Temporary; grep [KHMM-DBG] to remove.
     void debugSetApplyPolygonChanges(bool value) { ApplyPolygonChanges = value; }
     uint32_t debugTakePolyHookCalls() { return DebugPolyHookCalls.exchange(0, std::memory_order_relaxed); }
+    uint32_t debugShapeCount3D() { return (uint32_t) current3DShapes.size(); }
 
     void _superLoadConfigs(
         std::function<bool(std::string)> getBoolConfig,
