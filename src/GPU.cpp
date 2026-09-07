@@ -119,6 +119,14 @@ void GPU::ResetVRAMCache() noexcept
     memset(VRAMFlat_BOBJExtPal, 0, sizeof(VRAMFlat_BOBJExtPal));
     memset(VRAMFlat_Texture, 0, sizeof(VRAMFlat_Texture));
     memset(VRAMFlat_TexPal, 0, sizeof(VRAMFlat_TexPal));
+
+    // [KHMM] 2D frame cache: a cache reset means palette/OAM may have been replaced wholesale
+    // (savestate load bypasses WritePalette/WriteOAM), so mark them fully dirty and drop any
+    // cached-frame assumption in the 2D renderer.
+    OAMDirty = 0x3;
+    PaletteDirty = 0xF;
+    if (GPU2D_Renderer)
+        GPU2D_Renderer->Kh2DInvalidateCache();
 }
 
 void GPU::Reset() noexcept
@@ -213,6 +221,10 @@ void GPU::Stop() noexcept
     memset(Framebuffer[0][1].get(), 0, fbsize*4);
     memset(Framebuffer[1][0].get(), 0, fbsize*4);
     memset(Framebuffer[1][1].get(), 0, fbsize*4);
+
+    // [KHMM] 2D frame cache: buffers were just cleared — cached content is gone
+    if (GPU2D_Renderer)
+        GPU2D_Renderer->Kh2DInvalidateCache();
 
     GPU3D.Stop(*this);
 }
@@ -326,6 +338,10 @@ void GPU::InitFramebuffers() noexcept
     memset(Framebuffer[1][1].get(), 0, fbsize*4);
 
     AssignFramebuffers();
+
+    // [KHMM] 2D frame cache: buffers were reallocated/cleared — cached content is gone
+    if (GPU2D_Renderer)
+        GPU2D_Renderer->Kh2DInvalidateCache();
 }
 
 

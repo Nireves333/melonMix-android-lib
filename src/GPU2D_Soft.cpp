@@ -102,9 +102,140 @@ u32 SoftRenderer::ColorComposite(int i, u32 val1, u32 val2) const
     return val1;
 }
 
+// [KHMM] 2D frame cache — the per-frame skip decision, run at the first drawn line of each
+// frame for each unit. A unit's software-2D output is a pure function of: its IO registers,
+// its palette + OAM regions, its BG/OBJ/ExtPal VRAM, and (accelerated mode, unit A) the 3D
+// x-scroll — the 3D image itself never enters this buffer in accelerated mode (it is a marker
+// composited later on the GPU). When all of those are unchanged for 2+ consecutive frames,
+// BOTH double-buffered framebuffers already hold this exact image, so drawing can be skipped.
+// Conservative gates (any hit ⇒ draw): display mode 2/3 (VRAM/FIFO display), display capture,
+// mosaic in use (free-running counters), mid-frame register writes (raster effects), software
+// 3D (3D is CPU-composited into this buffer), cache disabled. Palette/OAM changes come from
+// the PaletteDirty/OAMDirty write masks (unused elsewhere in this build; savestate load marks
+// them via ResetVRAMCache). VRAM changes come from the same VRAMDirty tracking the renderer
+// already uses; mid-frame VRAM changes consumed by the per-line derives are carried over via
+// Kh2DVRAMChanged. Worst case for a missed *mid-frame* change is one stale frame, after which
+// the change is seen and the unit redraws.
+void SoftRenderer::Kh2DDecideSkip(Unit* unit)
+{
+    u32 num = unit->Num;
+
+    // NOTE: the PaletteDirty/OAMDirty write masks are useless here — DS games routinely DMA
+    // the whole OAM/palette every VBlank with unchanged values, which would block the cache
+    // every frame. Palette+OAM changes are detected by CONTENT hash instead (folded into the
+    // register hash below); 1KB each per unit is a negligible scan.
+
+    // derive + apply VRAM dirtiness now (needed even when skipping, so tracking stays current);
+    // fold in changes the per-line derives consumed during the previous, drawn frame
+    bool vramChanged = Kh2DVRAMChanged[num];
+    Kh2DVRAMChanged[num] = false;
+    if (num == 0)
+    {
+        auto bgDirty = GPU.VRAMDirty_ABG.DeriveState(GPU.VRAMMap_ABG, GPU);
+        vramChanged |= GPU.MakeVRAMFlat_ABGCoherent(bgDirty);
+        auto bgExtPalDirty = GPU.VRAMDirty_ABGExtPal.DeriveState(GPU.VRAMMap_ABGExtPal, GPU);
+        vramChanged |= GPU.MakeVRAMFlat_ABGExtPalCoherent(bgExtPalDirty);
+        auto objExtPalDirty = GPU.VRAMDirty_AOBJExtPal.DeriveState(&GPU.VRAMMap_AOBJExtPal, GPU);
+        vramChanged |= GPU.MakeVRAMFlat_AOBJExtPalCoherent(objExtPalDirty);
+        auto objDirty = GPU.VRAMDirty_AOBJ.DeriveState(GPU.VRAMMap_AOBJ, GPU);
+        vramChanged |= GPU.MakeVRAMFlat_AOBJCoherent(objDirty);
+    }
+    else
+    {
+        auto bgDirty = GPU.VRAMDirty_BBG.DeriveState(GPU.VRAMMap_BBG, GPU);
+        vramChanged |= GPU.MakeVRAMFlat_BBGCoherent(bgDirty);
+        auto bgExtPalDirty = GPU.VRAMDirty_BBGExtPal.DeriveState(GPU.VRAMMap_BBGExtPal, GPU);
+        vramChanged |= GPU.MakeVRAMFlat_BBGExtPalCoherent(bgExtPalDirty);
+        auto objExtPalDirty = GPU.VRAMDirty_BOBJExtPal.DeriveState(&GPU.VRAMMap_BOBJExtPal, GPU);
+        vramChanged |= GPU.MakeVRAMFlat_BOBJExtPalCoherent(objExtPalDirty);
+        auto objDirty = GPU.VRAMDirty_BOBJ.DeriveState(GPU.VRAMMap_BOBJ, GPU);
+        vramChanged |= GPU.MakeVRAMFlat_BOBJCoherent(objDirty);
+    }
+
+    // register snapshot hash (FNV-1a over every register the renderer reads)
+    auto mix = [](u64 h, u64 v) { h ^= v; return h * 0x100000001B3ull; };
+    u64 h = 1469598103934665603ull;
+    h = mix(h, unit->DispCnt);
+    for (int i = 0; i < 4; i++) h = mix(h, unit->BGCnt[i]);
+    for (int i = 0; i < 4; i++) h = mix(h, ((u64)unit->BGXPos[i] << 16) | unit->BGYPos[i]);
+    for (int i = 0; i < 2; i++) h = mix(h, ((u64)(u32)unit->BGXRef[i] << 32) | (u32)unit->BGYRef[i]);
+    for (int i = 0; i < 2; i++) h = mix(h, ((u64)(u16)unit->BGRotA[i] << 48) | ((u64)(u16)unit->BGRotB[i] << 32)
+                                          | ((u64)(u16)unit->BGRotC[i] << 16) | (u16)unit->BGRotD[i]);
+    for (int i = 0; i < 4; i++) h = mix(h, ((u64)unit->Win0Coords[i] << 16) | ((u64)unit->Win1Coords[i] << 8) | unit->WinCnt[i]);
+    h = mix(h, ((u64)unit->BlendCnt << 32) | ((u64)unit->BlendAlpha << 16) | ((u64)unit->EVA << 8) | unit->EVB);
+    h = mix(h, ((u64)unit->EVY << 16) | unit->MasterBrightness);
+    h = mix(h, unit->Enabled ? 1 : 0);
+    if (num == 0)
+    {
+        h = mix(h, unit->CaptureCnt);
+        h = mix(h, GPU.GPU3D.GetRenderXPos());
+    }
+
+    // palette + OAM content (1KB each per unit: A = 0x000-0x3FF, B = 0x400-0x7FF)
+    const u64* pal = reinterpret_cast<const u64*>(&GPU.Palette[num * 0x400]);
+    const u64* oam = reinterpret_cast<const u64*>(&GPU.OAM[num * 0x400]);
+    for (int i = 0; i < 0x400 / 8; i++) h = mix(h, pal[i]);
+    for (int i = 0; i < 0x400 / 8; i++) h = mix(h, oam[i]);
+
+    u32 dispmode = (unit->DispCnt >> 16) & (num ? 0x1 : 0x3);
+    bool midFrameWrite = unit->KhMidFrameRegWrite;
+    unit->KhMidFrameRegWrite = false;
+    bool gateOk = Kh2DSkipEnabled
+        && dispmode <= 1
+        && !(num == 0 && ((unit->CaptureCnt & (1u << 31)) || unit->CaptureLatch))
+        && unit->BGMosaicSize[0] == 0 && unit->BGMosaicSize[1] == 0
+        && unit->OBJMosaicSize[0] == 0 && unit->OBJMosaicSize[1] == 0
+        && (num == 1 || GPU.GPU3D.IsRendererAccelerated());
+
+    bool hashSame = h == Kh2DRegHash[num];
+    bool inputsSame = gateOk && !midFrameWrite && hashSame && !vramChanged;
+    Kh2DRegHash[num] = h;
+
+    // [KHMM-DBG] why-not-static counters for the perf log (remove with the rest of KHMM-DBG)
+    if (!inputsSame)
+    {
+        if (!gateOk) Kh2DBlockReasons[num][0]++;
+        if (midFrameWrite) Kh2DBlockReasons[num][1]++;
+        if (!hashSame) Kh2DBlockReasons[num][2]++;
+        if (vramChanged) Kh2DBlockReasons[num][3]++;
+    }
+
+    if (inputsSame)
+    {
+        if (Kh2DStaticFrames[num] < 1000000)
+            Kh2DStaticFrames[num]++;
+    }
+    else
+    {
+        Kh2DStaticFrames[num] = 0;
+    }
+
+    // >= 2: the two identical-input frames before this one filled both double buffers
+    // with this exact image, so the 2-frames-old buffer this frame would reuse matches
+    Kh2DSkipUnit[num] = Kh2DStaticFrames[num] >= 2;
+    if (Kh2DSkipUnit[num])
+        Kh2DSkippedFrames[num]++;
+}
+
 void SoftRenderer::DrawScanline(u32 line, Unit* unit)
 {
     CurUnit = unit;
+
+    // [KHMM] 2D frame cache: decide once per frame, then skip the whole unit if static.
+    // If this frame's line-0 sprite prerender was skipped at the end of the previous frame
+    // but we now must draw, redo it so OBJLine holds line 0's sprites.
+    if (line == 0)
+    {
+        Kh2DDecideSkip(unit);
+        if (!Kh2DSkipUnit[unit->Num] && Kh2DSpritesL0Pending[unit->Num])
+        {
+            Kh2DSpritesL0Pending[unit->Num] = false;
+            DrawSprites(0, unit);
+            CurUnit = unit;
+        }
+    }
+    if (Kh2DSkipUnit[unit->Num])
+        return;
 
     int stride = GPU.GPU3D.IsRendererAccelerated() ? (256*3 + 1) : 256;
     u32* dst = &Framebuffer[CurUnit->Num][stride * line];
@@ -115,20 +246,20 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
     if (CurUnit->Num == 0)
     {
         auto bgDirty = GPU.VRAMDirty_ABG.DeriveState(GPU.VRAMMap_ABG, GPU);
-        GPU.MakeVRAMFlat_ABGCoherent(bgDirty);
+        Kh2DVRAMChanged[0] |= GPU.MakeVRAMFlat_ABGCoherent(bgDirty); // [KHMM] 2D frame cache
         auto bgExtPalDirty = GPU.VRAMDirty_ABGExtPal.DeriveState(GPU.VRAMMap_ABGExtPal, GPU);
-        GPU.MakeVRAMFlat_ABGExtPalCoherent(bgExtPalDirty);
+        Kh2DVRAMChanged[0] |= GPU.MakeVRAMFlat_ABGExtPalCoherent(bgExtPalDirty);
         auto objExtPalDirty = GPU.VRAMDirty_AOBJExtPal.DeriveState(&GPU.VRAMMap_AOBJExtPal, GPU);
-        GPU.MakeVRAMFlat_AOBJExtPalCoherent(objExtPalDirty);
+        Kh2DVRAMChanged[0] |= GPU.MakeVRAMFlat_AOBJExtPalCoherent(objExtPalDirty);
     }
     else
     {
         auto bgDirty = GPU.VRAMDirty_BBG.DeriveState(GPU.VRAMMap_BBG, GPU);
-        GPU.MakeVRAMFlat_BBGCoherent(bgDirty);
+        Kh2DVRAMChanged[1] |= GPU.MakeVRAMFlat_BBGCoherent(bgDirty); // [KHMM] 2D frame cache
         auto bgExtPalDirty = GPU.VRAMDirty_BBGExtPal.DeriveState(GPU.VRAMMap_BBGExtPal, GPU);
-        GPU.MakeVRAMFlat_BBGExtPalCoherent(bgExtPalDirty);
+        Kh2DVRAMChanged[1] |= GPU.MakeVRAMFlat_BBGExtPalCoherent(bgExtPalDirty);
         auto objExtPalDirty = GPU.VRAMDirty_BOBJExtPal.DeriveState(&GPU.VRAMMap_BOBJExtPal, GPU);
-        GPU.MakeVRAMFlat_BOBJExtPalCoherent(objExtPalDirty);
+        Kh2DVRAMChanged[1] |= GPU.MakeVRAMFlat_BOBJExtPalCoherent(objExtPalDirty);
     }
 
     bool forceblank = false;
@@ -1589,6 +1720,18 @@ void SoftRenderer::DrawSprites(u32 line, Unit* unit)
 {
     CurUnit = unit;
 
+    // [KHMM] 2D frame cache: the line-0 call lands before the next frame's skip decision
+    // (VCount 262), so it runs under the previous frame's decision; if that was "skip" but
+    // the new decision is "draw", DrawScanline(0) redoes this call via Kh2DSpritesL0Pending.
+    if (Kh2DSkipUnit[unit->Num])
+    {
+        if (line == 0)
+            Kh2DSpritesL0Pending[unit->Num] = true;
+        return;
+    }
+    if (line == 0)
+        Kh2DSpritesL0Pending[unit->Num] = false;
+
     if (line == 0)
     {
         // reset those counters here
@@ -1604,12 +1747,12 @@ void SoftRenderer::DrawSprites(u32 line, Unit* unit)
     if (CurUnit->Num == 0)
     {
         auto objDirty = GPU.VRAMDirty_AOBJ.DeriveState(GPU.VRAMMap_AOBJ, GPU);
-        GPU.MakeVRAMFlat_AOBJCoherent(objDirty);
+        Kh2DVRAMChanged[0] |= GPU.MakeVRAMFlat_AOBJCoherent(objDirty); // [KHMM] 2D frame cache
     }
     else
     {
         auto objDirty = GPU.VRAMDirty_BOBJ.DeriveState(GPU.VRAMMap_BOBJ, GPU);
-        GPU.MakeVRAMFlat_BOBJCoherent(objDirty);
+        Kh2DVRAMChanged[1] |= GPU.MakeVRAMFlat_BOBJCoherent(objDirty); // [KHMM] 2D frame cache
     }
 
     NumSprites[CurUnit->Num] = 0;

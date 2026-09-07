@@ -42,7 +42,43 @@ public:
 
     void setPlugin(Plugins::Plugin* _plugin) { plugin = _plugin; } // [KHMM]
 
+    // [KHMM] 2D frame cache: when a unit's inputs (registers, palette, OAM, VRAM, 3D xpos)
+    // are unchanged for 2+ consecutive frames — enough for both double-buffered framebuffers
+    // to hold the identical image — skip DrawScanline/DrawSprites for that unit entirely.
+    // The GL composite samples the (unchanged) framebuffer as usual. See Kh2DDecideSkip.
+    void Kh2DInvalidateCache() override
+    {
+        Kh2DStaticFrames[0] = Kh2DStaticFrames[1] = 0;
+        Kh2DSkipUnit[0] = Kh2DSkipUnit[1] = false;
+    }
+    bool Kh2DSkipEnabled = true;               // runtime A/B toggle (perf debug file "2dskip")
+    u32 Kh2DTakeSkipped(int unit)              // per-window effectiveness counter for the perf log
+    {
+        u32 v = Kh2DSkippedFrames[unit];
+        Kh2DSkippedFrames[unit] = 0;
+        return v;
+    }
+    // [KHMM-DBG] why-not-static counters: [0]=gate [1]=midframe reg write [2]=hash [3]=vram
+    void Kh2DTakeBlockReasons(int unit, u32 out[4])
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            out[i] = Kh2DBlockReasons[unit][i];
+            Kh2DBlockReasons[unit][i] = 0;
+        }
+    }
+
 private:
+    // [KHMM] 2D frame cache state (all per unit A/B)
+    void Kh2DDecideSkip(Unit* unit);
+    u64 Kh2DRegHash[2] = {0, 0};               // last frame's register-snapshot hash
+    int Kh2DStaticFrames[2] = {0, 0};          // consecutive frames with identical inputs
+    bool Kh2DSkipUnit[2] = {false, false};     // this frame's decision
+    bool Kh2DVRAMChanged[2] = {false, false};  // VRAM coherence copies seen during the drawn frame
+    bool Kh2DSpritesL0Pending[2] = {false, false}; // line-0 sprite prerender skipped, redo if drawing
+    u32 Kh2DSkippedFrames[2] = {0, 0};
+    u32 Kh2DBlockReasons[2][4] = {{0}, {0}};   // [KHMM-DBG] gate/midframe/hash/vram block counts
+
     melonDS::GPU& GPU;
     Plugins::Plugin* plugin = nullptr; // [KHMM]
     alignas(8) u32 BGOBJLine[256*3];

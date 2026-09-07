@@ -268,6 +268,8 @@ u32 Unit::Read32(u32 addr)
 
 void Unit::Write8(u32 addr, u8 val)
 {
+    if (GPU.VCount < 192) KhMidFrameRegWrite = true; // [KHMM] 2D frame cache
+
     switch (addr & 0x00000FFF)
     {
     case 0x000:
@@ -372,6 +374,8 @@ void Unit::Write8(u32 addr, u8 val)
 
 void Unit::Write16(u32 addr, u16 val)
 {
+    if (GPU.VCount < 192) KhMidFrameRegWrite = true; // [KHMM] 2D frame cache
+
     switch (addr & 0x00000FFF)
     {
     case 0x000:
@@ -524,6 +528,8 @@ void Unit::Write16(u32 addr, u16 val)
 
 void Unit::Write32(u32 addr, u32 val)
 {
+    if (GPU.VCount < 192) KhMidFrameRegWrite = true; // [KHMM] 2D frame cache
+
     switch (addr & 0x00000FFF)
     {
     case 0x000:

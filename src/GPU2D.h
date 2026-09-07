@@ -122,6 +122,12 @@ public:
     u32 CaptureCnt;
 
     u16 MasterBrightness;
+
+    // [KHMM] 2D frame cache: set on any register write landing mid-frame (VCount < 192),
+    // consumed once per frame by the software renderer's skip decision. Mid-frame register
+    // writes (raster effects) make the frame's output differ from its start-of-frame state,
+    // so frames with this flag are never treated as cacheable.
+    bool KhMidFrameRegWrite = false;
 private:
     melonDS::GPU& GPU;
 };
@@ -135,6 +141,10 @@ public:
     virtual void DrawSprites(u32 line, Unit* unit) = 0;
 
     virtual void VBlankEnd(Unit* unitA, Unit* unitB) = 0;
+
+    // [KHMM] 2D frame cache: drop any cached-frame assumption (framebuffers were reallocated,
+    // cleared, or wholesale-replaced by reset/savestate). No-op for renderers without a cache.
+    virtual void Kh2DInvalidateCache() {}
 
     void SetFramebuffer(u32* unitA, u32* unitB)
     {

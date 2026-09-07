@@ -484,6 +484,22 @@ public:
         PaletteDirty |= 1 << (addr / VRAMDirtyGranularity);
     }
 
+    // [KHMM] 2D frame cache: consume (test + clear) bits of the palette/OAM write masks.
+    // Nothing else in this build reads PaletteDirty/OAMDirty; the 2D skip decision uses them
+    // to detect palette/OAM changes per unit.
+    bool KhConsumePaletteDirty(u32 mask) noexcept
+    {
+        bool dirty = (PaletteDirty & mask) != 0;
+        PaletteDirty &= ~mask;
+        return dirty;
+    }
+    bool KhConsumeOAMDirty(u32 mask) noexcept
+    {
+        bool dirty = (OAMDirty & mask) != 0;
+        OAMDirty &= ~mask;
+        return dirty;
+    }
+
     template<typename T>
     T ReadOAM(u32 addr) const noexcept
     {
@@ -681,14 +697,28 @@ private:
             u8* fastAccess = GetUniqueBankPtr(mappings[*it / VRAMBitsPerMapping], offset);
             if (fastAccess)
             {
-                memcpy(dst, fastAccess, VRAMDirtyGranularity);
+                // [KHMM] compare before copy: games routinely re-DMA identical tile data
+                // (30fps logic writing every other frame), which marks regions dirty without
+                // changing content. Returning "changed" only on real content changes lets the
+                // 2D frame cache (and the compute renderer's re-uploads) skip no-op updates;
+                // the flat still ends up coherent either way.
+                if (memcmp(dst, fastAccess, VRAMDirtyGranularity) != 0)
+                {
+                    memcpy(dst, fastAccess, VRAMDirtyGranularity);
+                    change = true;
+                }
             }
             else
             {
+                alignas(8) u8 tmp[VRAMDirtyGranularity]; // [KHMM] compare before copy (slow path)
                 for (u32 i = 0; i < VRAMDirtyGranularity; i += 8)
-                    *(u64*)&dst[i] = (this->*slowAccess)(offset + i);
+                    *(u64*)&tmp[i] = (this->*slowAccess)(offset + i);
+                if (memcmp(dst, tmp, VRAMDirtyGranularity) != 0)
+                {
+                    memcpy(dst, tmp, VRAMDirtyGranularity);
+                    change = true;
+                }
             }
-            change = true;
             it++;
         }
         return change;
