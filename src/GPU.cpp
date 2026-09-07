@@ -24,11 +24,15 @@
 
 #include "GPU2D_Soft.h"
 #include "GPU3D.h"
+#include "KhPerfDetail.h" // [KHMM-DBG]
 
 namespace melonDS
 {
 using Platform::Log;
 using Platform::LogLevel;
+
+// [KHMM-DBG] definition of the emu fine-split accumulators declared in KhPerfDetail.h
+std::atomic<uint64_t> g_khEmuDetailNanos[KH_EMU_DETAIL_COUNT]{};
 
 #define LINE_CYCLES  (355*6)
 #define HBLANK_CYCLES (48+(256*6))
@@ -882,19 +886,23 @@ void GPU::StartHBlank(u32 line) noexcept
 
     if (VCount < 192)
     {
-        // draw
-        // note: this should start 48 cycles after the scanline start
-        if (line < 192)
         {
-            GPU2D_Renderer->DrawScanline(line, &GPU2D_A);
-            GPU2D_Renderer->DrawScanline(line, &GPU2D_B);
-        }
+            KhEmuScopedNs _kh2d(KH_EMU_2D); // [KHMM-DBG] software 2D scanline+sprite cost
 
-        // sprites are pre-rendered one scanline in advance
-        if (line < 191)
-        {
-            GPU2D_Renderer->DrawSprites(line+1, &GPU2D_A);
-            GPU2D_Renderer->DrawSprites(line+1, &GPU2D_B);
+            // draw
+            // note: this should start 48 cycles after the scanline start
+            if (line < 192)
+            {
+                GPU2D_Renderer->DrawScanline(line, &GPU2D_A);
+                GPU2D_Renderer->DrawScanline(line, &GPU2D_B);
+            }
+
+            // sprites are pre-rendered one scanline in advance
+            if (line < 191)
+            {
+                GPU2D_Renderer->DrawSprites(line+1, &GPU2D_A);
+                GPU2D_Renderer->DrawSprites(line+1, &GPU2D_B);
+            }
         }
 
         NDS.CheckDMAs(0, 0x02);
@@ -905,6 +913,7 @@ void GPU::StartHBlank(u32 line) noexcept
     }
     else if (VCount == 262)
     {
+        KhEmuScopedNs _kh2d(KH_EMU_2D); // [KHMM-DBG]
         GPU2D_Renderer->DrawSprites(0, &GPU2D_A);
         GPU2D_Renderer->DrawSprites(0, &GPU2D_B);
     }

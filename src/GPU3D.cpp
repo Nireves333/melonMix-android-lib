@@ -23,6 +23,7 @@
 #include "GPU.h"
 #include "FIFO.h"
 #include "GPU3D_Soft.h"
+#include "KhPerfDetail.h" // [KHMM-DBG]
 #include "Platform.h"
 #include "GPU3D.h"
 
@@ -2388,6 +2389,8 @@ void GPU3D::Run() noexcept
 
     if (CycleCount <= 0)
     {
+        KhEmuScopedNs _kh3d(KH_EMU_3DGEO); // [KHMM-DBG] geometry command execution
+
         while (CycleCount <= 0 && !CmdPIPE.IsEmpty())
         {
             if (NumPushPopCommands == 0) GXStat &= ~(1<<14);
@@ -2464,6 +2467,8 @@ void GPU3D::VBlank() noexcept
         {
             if (FlushRequest)
             {
+                KhEmuScopedNs _kh3d(KH_EMU_3DGEO); // [KHMM-DBG] polygon partition + Y-sort
+
                 if (NumPolygons)
                 {
                     // separate translucent polygons from opaque ones
