@@ -3036,6 +3036,25 @@ bool PluginKingdomHeartsDays::isWithdrawPauseScreenType()
                                            PAUSE_SCREEN_WITH_WITHDRAW_VALUE_JP, PAUSE_SCREEN_WITH_WITHDRAW_VALUE_JP_REV1)) != 0;
 }
 
+// [KHMM] the pause screen type also has a "skip available" bit (the constant existed upstream
+// but was unused): pauses where the game offers no options at all (e.g. the unskippable Round
+// Room conversations) have neither the withdraw nor the skip bit set, and the native menu
+// shows only "PAUSE". Upstream assumed not-withdraw = skip and wrongly offered Skip there.
+bool PluginKingdomHeartsDays::isSkipPauseScreenType()
+{
+    u8 pauseScreenType = nds->ARM7Read8(getAnyByCart(PAUSE_SCREEN_TYPE_ADDRESS_US, PAUSE_SCREEN_TYPE_ADDRESS_EU,
+                                                      PAUSE_SCREEN_TYPE_ADDRESS_JP, PAUSE_SCREEN_TYPE_ADDRESS_JP_REV1));
+    return (pauseScreenType & getAnyByCart(PAUSE_SCREEN_WITH_SKIP_VALUE_US, PAUSE_SCREEN_WITH_SKIP_VALUE_EU,
+                                           PAUSE_SCREEN_WITH_SKIP_VALUE_JP, PAUSE_SCREEN_WITH_SKIP_VALUE_JP_REV1)) != 0;
+}
+
+// [KHMM-DBG] expose the raw pause-type byte for the perf log (verify the bit mapping on device)
+int PluginKingdomHeartsDays::debugPauseScreenType()
+{
+    return nds->ARM7Read8(getAnyByCart(PAUSE_SCREEN_TYPE_ADDRESS_US, PAUSE_SCREEN_TYPE_ADDRESS_EU,
+                                       PAUSE_SCREEN_TYPE_ADDRESS_JP, PAUSE_SCREEN_TYPE_ADDRESS_JP_REV1));
+}
+
 std::vector<std::string> PluginKingdomHeartsDays::gamePauseMenuButtonLabels()
 {
     const Plugins::MenuStrings& strings = Plugins::menuStrings(cutsceneMenuLanguage());
@@ -3044,7 +3063,15 @@ std::vector<std::string> PluginKingdomHeartsDays::gamePauseMenuButtonLabels()
         return { strings.yes, strings.no };
     }
 
-    return { strings.cont, isWithdrawPauseScreenType() ? strings.withdraw : strings.skip };
+    if (isWithdrawPauseScreenType()) {
+        return { strings.cont, strings.withdraw };
+    }
+    if (isSkipPauseScreenType()) {
+        return { strings.cont, strings.skip };
+    }
+
+    // [KHMM] no options available: plain "PAUSE" with no buttons, matching the native menu
+    return {};
 }
 
 std::string PluginKingdomHeartsDays::gamePauseMenuSubtitle()

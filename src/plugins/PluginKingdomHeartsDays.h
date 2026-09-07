@@ -73,6 +73,7 @@ public:
     void onGamePauseMenuConfirmPressed() override;
     void onGamePauseMenuCancelPressed() override;
     void onGamePauseMenuOverlayHidden() override;
+    int debugPauseScreenType() override; // [KHMM-DBG] raw pause-type byte for the perf log
     std::string localizationFilePath(std::string language) override;
     std::filesystem::path patchReplacementCutsceneIfNeeded(CutsceneEntry* cutscene, std::filesystem::path folderPath);
     bool isUnskippableMobiCutscene(CutsceneEntry* cutscene) override;
@@ -114,6 +115,7 @@ private:
 
     bool _ConfirmingWithdraw = false;
     bool isWithdrawPauseScreenType();
+    bool isSkipPauseScreenType(); // [KHMM] pause offers Skip (bit 0x04); neither bit = no options
     void cancelWithdrawConfirmation();
 
     bool IsBottomScreen2DTextureBlack;

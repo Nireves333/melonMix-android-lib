@@ -301,6 +301,7 @@ public:
     virtual void onGamePauseMenuConfirmPressed() {}
     virtual void onGamePauseMenuCancelPressed() {}
     virtual void onGamePauseMenuOverlayHidden() {}
+    virtual int debugPauseScreenType() { return -1; } // [KHMM-DBG] raw pause-type byte for the perf log
 
     void pauseReplacementCutsceneThroughPauseMenu();
     void resumeReplacementCutsceneThroughPauseMenu();
