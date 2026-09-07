@@ -34,6 +34,16 @@ template< typename Type > struct Factory : public IFactory {
 IFactory* factories[] = {LOAD_PLUGINS};
 #undef LOAD_PLUGIN
 
+// [KHMM] see PluginManager.h
+bool PluginManager::isSupported(u32 gameCode) {
+    for (IFactory* factory : factories) {
+        if (factory->isCart(gameCode)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 Plugin* PluginManager::load(u32 gameCode) {
     Plugin* plugin = nullptr;
     for (IFactory* factory : factories) {
