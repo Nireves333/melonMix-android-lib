@@ -1896,6 +1896,14 @@ int PluginKingdomHeartsDays::renderer_brightnessMode()
         return brightnessMode_Horizontal;
     }
     if (GameScene == gameScene_Cutscene) {
+        // (port fix, not in desktop KHMM) DS cutscenes shown as both screens side by
+        // side must apply each screen's own master brightness, or a screen the game
+        // has faded to black keeps showing its raw backdrop color (the "blue screen"
+        // on the bottom screen of Days' DS-rendered opening credits). Auto brightness
+        // only works in the shape-walk path, which dual layouts never reach.
+        if (renderer_screenLayout() == screenLayout_BothHorizontal) {
+            return brightnessMode_Horizontal;
+        }
         return brightnessMode_Auto;
     }
     if (GameScene == gameScene_WorldSelector) {
