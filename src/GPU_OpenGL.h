@@ -54,7 +54,7 @@ public:
     // meaningful when a plugin FS is active), so toggling mid-session needs no renderer reinit.
     void SetCompositeFSEnabled(bool enabled) noexcept { CompositeFSEnabled = enabled; }
 private:
-    GLCompositor(GLuint CompShader, Plugins::Plugin* plugin) noexcept; // [KHMM] plugin param
+    GLCompositor(GLuint CompShader, Plugins::Plugin* plugin, bool pluginShaderCompiled) noexcept; // [KHMM] plugin param + whether its custom FS compiled
     int Scale = 0;
     int ScreenH = 0, ScreenW = 0;
 
