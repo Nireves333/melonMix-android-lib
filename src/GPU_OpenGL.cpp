@@ -41,24 +41,39 @@ std::optional<GLCompositor> GLCompositor::New(Plugins::Plugin* plugin) noexcept 
     // [KHMM] let the game plugin supply a custom composite fragment shader (single-screen / HUD layout) — from KHMelonMix src/GPU_OpenGL.cpp
     const char* kCompositorFS_Custom = plugin == nullptr ? nullptr : plugin->gpuOpenGL_FS();
     const char* compositorFS = kCompositorFS_Custom == nullptr ? kCompositorFS_Nearest : kCompositorFS_Custom;
+    bool pluginShaderCompiled = kCompositorFS_Custom != nullptr;
     if (!OpenGL::CompileVertexFragmentProgram(CompShader,
             kCompositorVS, compositorFS,
             "CompositorShader",
             {{"vPosition", 0}, {"vTexcoord", 1}},
             {{"oColor", 0}}))
-        return std::nullopt;
+    {
+        // (port fix, not in desktop KHMM) a GPU driver that rejects the plugin's composite
+        // shader must not take down the whole renderer (the game would white-screen);
+        // retry with the stock shader so the game still runs, just without enhanced graphics.
+        if (kCompositorFS_Custom == nullptr)
+            return std::nullopt;
+        Platform::Log(Platform::LogLevel::Error, "OpenGL: plugin composite shader rejected by driver, falling back to the stock compositor (enhanced graphics disabled)\n");
+        pluginShaderCompiled = false;
+        if (!OpenGL::CompileVertexFragmentProgram(CompShader,
+                kCompositorVS, kCompositorFS_Nearest,
+                "CompositorShader",
+                {{"vPosition", 0}, {"vTexcoord", 1}},
+                {{"oColor", 0}}))
+            return std::nullopt;
+    }
 
-    return { GLCompositor(CompShader, plugin) }; // [KHMM]
+    return { GLCompositor(CompShader, plugin, pluginShaderCompiled) }; // [KHMM]
 }
 
-GLCompositor::GLCompositor(GLuint compShader, Plugins::Plugin* plugin) noexcept : CompShader(compShader) // [KHMM] plugin param
+GLCompositor::GLCompositor(GLuint compShader, Plugins::Plugin* plugin, bool pluginShaderCompiled) noexcept : CompShader(compShader) // [KHMM] plugin param
 {
     CompScaleLoc = glGetUniformLocation(CompShader, "u3DScale");
 
     // [KHMM] hand the compositor shader to the plugin to bind its custom uniforms —
-    // only when the plugin actually supplied a custom shader (see UsesPluginShader).
+    // only when the plugin's custom shader actually compiled (see UsesPluginShader).
     GamePlugin = plugin;
-    UsesPluginShader = (GamePlugin != nullptr && GamePlugin->gpuOpenGL_FS() != nullptr);
+    UsesPluginShader = pluginShaderCompiled;
     if (UsesPluginShader) {
         GamePlugin->gpuOpenGL_FS_initVariables(CompShader);
     }
