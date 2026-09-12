@@ -490,7 +490,10 @@ bool Plugin::_superApplyAddonKeysToCutsceneMenu(u32* AddonMask, u32* AddonPress,
     u32 navPress = (*AddonPress) & (((u32)1 << upBit) | ((u32)1 << downBit));
     if (navPress != 0) {
         _CutsceneSkipMenuSelection = _CutsceneSkipMenuSelection == 0 ? 1 : 0;
-        updateCutscenePauseMenuOverlaySelection(_CutsceneSkipMenuSelection == 0 ? 1 : 0);
+        // [KHMM] fix over desktop (same line there re-applies the toggle expression and
+        // reports the OLD selection): the overlay must be told the value A will act on,
+        // like the DS-d-pad path in _superApplyHotkeyToInputMask does.
+        updateCutscenePauseMenuOverlaySelection(_CutsceneSkipMenuSelection);
         _CutsceneMenuSoundRequest = 2; // move
     }
 
