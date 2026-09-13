@@ -163,7 +163,23 @@ private:
 
     GLuint ColorBufferTex {}, DepthBufferTex {}, AttrBufferTex {};
     GLuint DownScaleBufferTex {};
-    GLuint PixelbufferID {};
+    // Display-capture readback PBOs. Two modes, switched per frame by the plugin
+    // (renderer_tolerateDisplayCaptureLatency):
+    //  - strict (default): write and map the SAME buffer each frame — the capture is
+    //    exactly one frame behind the render. The mapping blocks until the GPU
+    //    finishes the previous frame; correct for one-shot captures (pause snapshots)
+    //    where older content would be wrong, and cheap because such captures are rare.
+    //  - latency-tolerant (Days double-3D scenes, which capture EVERY frame and ran
+    //    near half speed on the blocking path): a ring of three, mapping the buffer
+    //    written three frames ago — never blocks. Three, not two: these scenes
+    //    alternate which screen the 3D belongs to per frame, so an EVEN offset hands
+    //    the displayed bottom-screen bitmap the OTHER screen's image (device-verified
+    //    failure); an odd offset keeps the same screen, one alternation cycle (~33ms
+    //    at 60fps) older, which the display and the plugin's pixel probes tolerate.
+    // The readback is always flushed as soon as it is issued so the strict mapping
+    // waits only for GPU completion, not for submission of the whole queue.
+    GLuint PixelbufferID[3] {};
+    int PixelbufferWriteIdx = 0;
 
     GLuint MainFramebuffer {}, DownscaleFramebuffer {};
     u32 Framebuffer[256*192] {};

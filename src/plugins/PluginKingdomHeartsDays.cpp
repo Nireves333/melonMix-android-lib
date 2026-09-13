@@ -1928,6 +1928,19 @@ bool PluginKingdomHeartsDays::renderer_showOriginalUI()
     return false;
 }
 
+// [KHMM-Android] Double-3D captures the 3D output EVERY frame, so the blocking readback
+// halved the frame rate for whole mission sections (the game stays in this scene well
+// past the visible vision). The tolerant ring keeps the correct screen (odd offset, see
+// GPU3D_OpenGL.h) one alternation cycle older — fine for the single-screen composite
+// (which shows the live 3D anyway), for the dual-mode bottom screen (a ~33ms-late
+// vision), and for this plugin's pixel probes (blackness/dialog checks with multi-frame
+// windows). One-shot captures elsewhere (pause snapshots) stay on the strict exact
+// readback.
+bool PluginKingdomHeartsDays::renderer_tolerateDisplayCaptureLatency()
+{
+    return GameScene == gameScene_InGameWithDouble3D;
+}
+
 bool PluginKingdomHeartsDays::shouldPreserveDsTopScreenWhileOnDualScreenModeForGameScene()
 {
     return GameScene != gameScene_InGameWithMap &&

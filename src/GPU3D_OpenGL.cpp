@@ -330,7 +330,7 @@ std::unique_ptr<GLRenderer> GLRenderer::New(Plugins::Plugin* plugin) noexcept //
     khSetBlend(true);
     glBlendEquationSeparate(GL_FUNC_ADD, GL_MAX);
 
-    glGenBuffers(1, &result->PixelbufferID);
+    glGenBuffers(3, result->PixelbufferID);
 
     // [KHMM] two copies of each VRAM texture, alternated per frame (see TexUploadFlip)
     glActiveTexture(GL_TEXTURE0);
@@ -438,8 +438,11 @@ void GLRenderer::SetRenderSettings(bool betterpolygons, int scale) noexcept
     glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, AttrBufferTex, 0);
     glDrawBuffers(2, fbassign);
 
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
-    glBufferData(GL_PIXEL_PACK_BUFFER, 256*192*4, NULL, GL_DYNAMIC_READ);
+    for (GLuint pixelBuffer : PixelbufferID)
+    {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pixelBuffer);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 256*192*4, NULL, GL_DYNAMIC_READ);
+    }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -1458,9 +1461,22 @@ void GLRenderer::PrepareCaptureFrame()
     glDrawBuffers(1, &bufferAttachment);
     glBlitFramebuffer(0, 0, ScreenW, ScreenH, 0, 0, 256, 192, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID[PixelbufferWriteIdx]);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, DownscaleFramebuffer);
     glReadPixels(0, 0, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    // Submit the readback now so it completes during the frame gap; without this,
+    // next frame's GetLine mapping submits and drains the whole queue (see the
+    // PixelbufferID note in the header).
+    glFlush();
+
+    // [KHMM-Android] latency-tolerant mode: advance the ring so GetLine maps the buffer
+    // written three frames ago and never blocks — an ODD offset, keeping the same
+    // screen's image in per-frame-alternating double-3D scenes (see the PixelbufferID
+    // note in the header). In strict mode the index stays put and GetLine maps this
+    // frame's readback.
+    if (GamePlugin != nullptr && CurGLCompositor.GetCompositeFSEnabled() &&
+        GamePlugin->renderer_tolerateDisplayCaptureLatency())
+        PixelbufferWriteIdx = (PixelbufferWriteIdx + 1) % 3;
 }
 
 void GLRenderer::Blit(const GPU& gpu)
@@ -1484,7 +1500,11 @@ u32* GLRenderer::GetLine(int line)
 
     if (line == 0)
     {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
+        // [KHMM-Android] maps this frame's readback in strict mode (blocks on the GPU) or
+        // the three-frames-old one in latency-tolerant mode (never blocks) — the ring
+        // index is advanced by PrepareCaptureFrame, see the PixelbufferID note in the
+        // header.
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID[PixelbufferWriteIdx]);
         u8* data = (u8*)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * stride * 192, GL_MAP_READ_BIT);
         if (data) memcpy(&Framebuffer[stride*0], data, 4*stride*192);
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);

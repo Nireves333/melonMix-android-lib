@@ -205,6 +205,15 @@ public:
     virtual int renderer_brightnessMode() { return 0; };
     virtual float renderer_forcedAspectRatio() {return AspectRatio;};
     virtual bool renderer_showOriginalUI() { return true; };
+    // [KHMM-Android] Allow the GPU->CPU display-capture readback to lag three frames
+    // behind the render (non-blocking ring) instead of one (blocks on the whole
+    // previous frame's GPU work, which halves the frame rate while the game keeps
+    // capture enabled). The odd offset preserves WHICH screen the capture contains in
+    // per-frame-alternating double-3D scenes; the content is one alternation cycle
+    // older. Return true only for scenes that capture continuously and can tolerate
+    // that staleness (Days' double-3D); one-shot captures (pause snapshots) need the
+    // strict exact readback.
+    virtual bool renderer_tolerateDisplayCaptureLatency() { return false; };
     virtual ThemeColor defaultThemeColor() { return {60, 60, 60}; };
 
     bool togglePause();
