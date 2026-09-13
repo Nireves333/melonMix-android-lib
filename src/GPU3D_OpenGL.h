@@ -163,7 +163,14 @@ private:
 
     GLuint ColorBufferTex {}, DepthBufferTex {}, AttrBufferTex {};
     GLuint DownScaleBufferTex {};
-    GLuint PixelbufferID {};
+    // Two display-capture PBOs in a ring: GetLine maps the buffer whose readback was
+    // issued two frames ago, so the map never waits for the GPU to drain the previous
+    // frame. A single PBO serialized CPU and GPU on every captured frame (Days keeps
+    // capture running through its double-3D sections), which let the Mali devfreq
+    // governor downclock and pinned those scenes near half speed. Costs one extra
+    // frame of capture latency, invisible at 60fps.
+    GLuint PixelbufferID[2] {};
+    int PixelbufferWriteIdx = 0;
 
     GLuint MainFramebuffer {}, DownscaleFramebuffer {};
     u32 Framebuffer[256*192] {};
