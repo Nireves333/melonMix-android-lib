@@ -163,15 +163,22 @@ private:
 
     GLuint ColorBufferTex {}, DepthBufferTex {}, AttrBufferTex {};
     GLuint DownScaleBufferTex {};
-    // Display-capture readback PBO. The capture must stay exactly one frame behind the
-    // 3D render: double-3D scenes (Days' Sora visions) alternate screens per frame, so
-    // any extra frame of latency hands the capture consumer the OTHER screen's image
-    // (bottom screen duplicating the top). The readback is flushed as soon as it is
-    // issued (PrepareCaptureFrame) so GetLine's read-mapping does not have to submit
-    // and drain the whole previous frame — an unflushed readback serialized CPU and
-    // GPU on every captured frame, let the Mali devfreq governor downclock on the idle
-    // gaps, and pinned those scenes near half speed.
-    GLuint PixelbufferID {};
+    // Display-capture readback PBOs. Two modes, switched per frame by the plugin
+    // (renderer_tolerateDisplayCaptureLatency):
+    //  - strict (default, and dual-screen mode): write and map the SAME buffer each
+    //    frame. The mapping blocks until the GPU finishes the previous frame — correct
+    //    but expensive, and double-3D scenes (which capture every frame) run near half
+    //    speed. The capture must stay exactly one frame behind there because those
+    //    scenes alternate screens per frame: any extra latency hands the DISPLAYED
+    //    bottom-screen bitmap the other screen's image.
+    //  - latency-tolerant (Days double-3D in single screen mode): ping-pong, mapping
+    //    the buffer written two frames ago — never blocks, full speed. Nothing displays
+    //    the captured image in that state; it only feeds VRAM and the plugin's pixel
+    //    probes, which tolerate stale content (device-verified).
+    // The readback is always flushed as soon as it is issued so the strict mapping
+    // waits only for GPU completion, not for submission of the whole queue.
+    GLuint PixelbufferID[2] {};
+    int PixelbufferWriteIdx = 0;
 
     GLuint MainFramebuffer {}, DownscaleFramebuffer {};
     u32 Framebuffer[256*192] {};
