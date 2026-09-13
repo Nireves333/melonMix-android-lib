@@ -163,14 +163,15 @@ private:
 
     GLuint ColorBufferTex {}, DepthBufferTex {}, AttrBufferTex {};
     GLuint DownScaleBufferTex {};
-    // Two display-capture PBOs in a ring: GetLine maps the buffer whose readback was
-    // issued two frames ago, so the map never waits for the GPU to drain the previous
-    // frame. A single PBO serialized CPU and GPU on every captured frame (Days keeps
-    // capture running through its double-3D sections), which let the Mali devfreq
-    // governor downclock and pinned those scenes near half speed. Costs one extra
-    // frame of capture latency, invisible at 60fps.
-    GLuint PixelbufferID[2] {};
-    int PixelbufferWriteIdx = 0;
+    // Display-capture readback PBO. The capture must stay exactly one frame behind the
+    // 3D render: double-3D scenes (Days' Sora visions) alternate screens per frame, so
+    // any extra frame of latency hands the capture consumer the OTHER screen's image
+    // (bottom screen duplicating the top). The readback is flushed as soon as it is
+    // issued (PrepareCaptureFrame) so GetLine's read-mapping does not have to submit
+    // and drain the whole previous frame — an unflushed readback serialized CPU and
+    // GPU on every captured frame, let the Mali devfreq governor downclock on the idle
+    // gaps, and pinned those scenes near half speed.
+    GLuint PixelbufferID {};
 
     GLuint MainFramebuffer {}, DownscaleFramebuffer {};
     u32 Framebuffer[256*192] {};

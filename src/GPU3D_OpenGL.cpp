@@ -330,7 +330,7 @@ std::unique_ptr<GLRenderer> GLRenderer::New(Plugins::Plugin* plugin) noexcept //
     khSetBlend(true);
     glBlendEquationSeparate(GL_FUNC_ADD, GL_MAX);
 
-    glGenBuffers(2, result->PixelbufferID);
+    glGenBuffers(1, &result->PixelbufferID);
 
     // [KHMM] two copies of each VRAM texture, alternated per frame (see TexUploadFlip)
     glActiveTexture(GL_TEXTURE0);
@@ -438,11 +438,8 @@ void GLRenderer::SetRenderSettings(bool betterpolygons, int scale) noexcept
     glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, AttrBufferTex, 0);
     glDrawBuffers(2, fbassign);
 
-    for (GLuint pixelBuffer : PixelbufferID)
-    {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, pixelBuffer);
-        glBufferData(GL_PIXEL_PACK_BUFFER, 256*192*4, NULL, GL_DYNAMIC_READ);
-    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
+    glBufferData(GL_PIXEL_PACK_BUFFER, 256*192*4, NULL, GL_DYNAMIC_READ);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -1461,12 +1458,13 @@ void GLRenderer::PrepareCaptureFrame()
     glDrawBuffers(1, &bufferAttachment);
     glBlitFramebuffer(0, 0, ScreenW, ScreenH, 0, 0, 256, 192, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
-    // Ring write: GetLine maps this same index BEFORE this runs each frame, so the
-    // mapped data is always the readback issued two frames earlier (see the header).
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID[PixelbufferWriteIdx]);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, DownscaleFramebuffer);
     glReadPixels(0, 0, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    PixelbufferWriteIdx ^= 1;
+    // Submit the readback now so it completes during the frame gap; without this,
+    // next frame's GetLine mapping submits and drains the whole queue (see the
+    // PixelbufferID note in the header).
+    glFlush();
 }
 
 void GLRenderer::Blit(const GPU& gpu)
@@ -1490,7 +1488,7 @@ u32* GLRenderer::GetLine(int line)
 
     if (line == 0)
     {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID[PixelbufferWriteIdx]);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
         u8* data = (u8*)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * stride * 192, GL_MAP_READ_BIT);
         if (data) memcpy(&Framebuffer[stride*0], data, 4*stride*192);
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
