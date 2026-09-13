@@ -330,7 +330,7 @@ std::unique_ptr<GLRenderer> GLRenderer::New(Plugins::Plugin* plugin) noexcept //
     khSetBlend(true);
     glBlendEquationSeparate(GL_FUNC_ADD, GL_MAX);
 
-    glGenBuffers(2, result->PixelbufferID);
+    glGenBuffers(3, result->PixelbufferID);
 
     // [KHMM] two copies of each VRAM texture, alternated per frame (see TexUploadFlip)
     glActiveTexture(GL_TEXTURE0);
@@ -1470,11 +1470,13 @@ void GLRenderer::PrepareCaptureFrame()
     glFlush();
 
     // [KHMM-Android] latency-tolerant mode: advance the ring so GetLine maps the buffer
-    // written two frames ago and never blocks (see the PixelbufferID note in the header).
-    // In strict mode the index stays put and GetLine maps this frame's readback.
+    // written three frames ago and never blocks — an ODD offset, keeping the same
+    // screen's image in per-frame-alternating double-3D scenes (see the PixelbufferID
+    // note in the header). In strict mode the index stays put and GetLine maps this
+    // frame's readback.
     if (GamePlugin != nullptr && CurGLCompositor.GetCompositeFSEnabled() &&
         GamePlugin->renderer_tolerateDisplayCaptureLatency())
-        PixelbufferWriteIdx ^= 1;
+        PixelbufferWriteIdx = (PixelbufferWriteIdx + 1) % 3;
 }
 
 void GLRenderer::Blit(const GPU& gpu)
@@ -1499,8 +1501,9 @@ u32* GLRenderer::GetLine(int line)
     if (line == 0)
     {
         // [KHMM-Android] maps this frame's readback in strict mode (blocks on the GPU) or
-        // the two-frames-old one in latency-tolerant mode (never blocks) — the ring index
-        // is advanced by PrepareCaptureFrame, see the PixelbufferID note in the header.
+        // the three-frames-old one in latency-tolerant mode (never blocks) — the ring
+        // index is advanced by PrepareCaptureFrame, see the PixelbufferID note in the
+        // header.
         glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID[PixelbufferWriteIdx]);
         u8* data = (u8*)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * stride * 192, GL_MAP_READ_BIT);
         if (data) memcpy(&Framebuffer[stride*0], data, 4*stride*192);

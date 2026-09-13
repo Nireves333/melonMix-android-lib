@@ -165,19 +165,20 @@ private:
     GLuint DownScaleBufferTex {};
     // Display-capture readback PBOs. Two modes, switched per frame by the plugin
     // (renderer_tolerateDisplayCaptureLatency):
-    //  - strict (default, and dual-screen mode): write and map the SAME buffer each
-    //    frame. The mapping blocks until the GPU finishes the previous frame — correct
-    //    but expensive, and double-3D scenes (which capture every frame) run near half
-    //    speed. The capture must stay exactly one frame behind there because those
-    //    scenes alternate screens per frame: any extra latency hands the DISPLAYED
-    //    bottom-screen bitmap the other screen's image.
-    //  - latency-tolerant (Days double-3D in single screen mode): ping-pong, mapping
-    //    the buffer written two frames ago — never blocks, full speed. Nothing displays
-    //    the captured image in that state; it only feeds VRAM and the plugin's pixel
-    //    probes, which tolerate stale content (device-verified).
+    //  - strict (default): write and map the SAME buffer each frame — the capture is
+    //    exactly one frame behind the render. The mapping blocks until the GPU
+    //    finishes the previous frame; correct for one-shot captures (pause snapshots)
+    //    where older content would be wrong, and cheap because such captures are rare.
+    //  - latency-tolerant (Days double-3D scenes, which capture EVERY frame and ran
+    //    near half speed on the blocking path): a ring of three, mapping the buffer
+    //    written three frames ago — never blocks. Three, not two: these scenes
+    //    alternate which screen the 3D belongs to per frame, so an EVEN offset hands
+    //    the displayed bottom-screen bitmap the OTHER screen's image (device-verified
+    //    failure); an odd offset keeps the same screen, one alternation cycle (~33ms
+    //    at 60fps) older, which the display and the plugin's pixel probes tolerate.
     // The readback is always flushed as soon as it is issued so the strict mapping
     // waits only for GPU completion, not for submission of the whole queue.
-    GLuint PixelbufferID[2] {};
+    GLuint PixelbufferID[3] {};
     int PixelbufferWriteIdx = 0;
 
     GLuint MainFramebuffer {}, DownscaleFramebuffer {};

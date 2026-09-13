@@ -1928,17 +1928,17 @@ bool PluginKingdomHeartsDays::renderer_showOriginalUI()
     return false;
 }
 
-// [KHMM-Android] In single screen mode the double-3D composite only ever shows the live
-// 3D layer (ShouldShowBottomScreen picks which screen); the captured image feeds VRAM
-// and this plugin's pixel probes, both of which tolerate two-frame-old content
-// (device-verified), so the readback may run non-blocking there — the blocking version
-// halved the frame rate for whole mission sections. In dual screen mode the bottom
-// screen DISPLAYS the captured image and the latency would show the wrong screen, so
-// those scenes keep the strict readback and pay its cost (upstream desktop is slow
-// there too, their issue #321).
+// [KHMM-Android] Double-3D captures the 3D output EVERY frame, so the blocking readback
+// halved the frame rate for whole mission sections (the game stays in this scene well
+// past the visible vision). The tolerant ring keeps the correct screen (odd offset, see
+// GPU3D_OpenGL.h) one alternation cycle older — fine for the single-screen composite
+// (which shows the live 3D anyway), for the dual-mode bottom screen (a ~33ms-late
+// vision), and for this plugin's pixel probes (blackness/dialog checks with multi-frame
+// windows). One-shot captures elsewhere (pause snapshots) stay on the strict exact
+// readback.
 bool PluginKingdomHeartsDays::renderer_tolerateDisplayCaptureLatency()
 {
-    return SingleScreenMode && GameScene == gameScene_InGameWithDouble3D;
+    return GameScene == gameScene_InGameWithDouble3D;
 }
 
 bool PluginKingdomHeartsDays::shouldPreserveDsTopScreenWhileOnDualScreenModeForGameScene()
