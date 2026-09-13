@@ -1451,6 +1451,14 @@ void GLRenderer::Stop(const GPU& gpu)
 
 void GLRenderer::PrepareCaptureFrame()
 {
+    // [KHMM-Android] the plugin can declare the captured image invisible for this scene
+    // (Days double-3D in single screen mode) — skip the whole downscale+readback; GetLine
+    // then serves the stale Framebuffer, which nothing displays. The CompositeFSEnabled
+    // gate keeps stock rendering (enhanced graphics off) capturing normally.
+    if (GamePlugin != nullptr && CurGLCompositor.GetCompositeFSEnabled() &&
+        GamePlugin->renderer_skipDisplayCaptureReadback())
+        return;
+
     glBindFramebuffer(GL_READ_FRAMEBUFFER, MainFramebuffer);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, DownscaleFramebuffer);
@@ -1488,10 +1496,18 @@ u32* GLRenderer::GetLine(int line)
 
     if (line == 0)
     {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
-        u8* data = (u8*)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * stride * 192, GL_MAP_READ_BIT);
-        if (data) memcpy(&Framebuffer[stride*0], data, 4*stride*192);
-        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        // [KHMM-Android] see PrepareCaptureFrame: when the readback is skipped there is
+        // nothing new to map — serve the stale Framebuffer (never displayed in this state).
+        // Mapping here would otherwise block until the GPU drains the previous frame.
+        bool skipReadback = GamePlugin != nullptr && CurGLCompositor.GetCompositeFSEnabled() &&
+                            GamePlugin->renderer_skipDisplayCaptureReadback();
+        if (!skipReadback)
+        {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
+            u8* data = (u8*)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * stride * 192, GL_MAP_READ_BIT);
+            if (data) memcpy(&Framebuffer[stride*0], data, 4*stride*192);
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
     }
 
     u64* ptr = (u64*)&Framebuffer[stride * line];

@@ -205,6 +205,14 @@ public:
     virtual int renderer_brightnessMode() { return 0; };
     virtual float renderer_forcedAspectRatio() {return AspectRatio;};
     virtual bool renderer_showOriginalUI() { return true; };
+    // [KHMM-Android] Skip the GPU->CPU display-capture readback for the current frame.
+    // The readback (GLRenderer::GetLine mapping the capture PBO) cannot complete without
+    // waiting on the whole previous frame's GPU work, which halves the frame rate for as
+    // long as the game keeps capture enabled. A plugin returns true when it knows the
+    // captured image is not visible anyway — Days' double-3D scenes in single screen
+    // mode, where the composite only ever shows the live 3D and the capture only feeds
+    // the hidden screen's bitmap.
+    virtual bool renderer_skipDisplayCaptureReadback() { return false; };
     virtual ThemeColor defaultThemeColor() { return {60, 60, 60}; };
 
     bool togglePause();

@@ -53,6 +53,7 @@ public:
     // setting: false draws with the stock nearest FS instead of the plugin composite FS (only
     // meaningful when a plugin FS is active), so toggling mid-session needs no renderer reinit.
     void SetCompositeFSEnabled(bool enabled) noexcept { CompositeFSEnabled = enabled; }
+    bool GetCompositeFSEnabled() const noexcept { return CompositeFSEnabled; } // [KHMM]
 private:
     GLCompositor(GLuint CompShader, Plugins::Plugin* plugin, bool pluginShaderCompiled) noexcept; // [KHMM] plugin param + whether its custom FS compiled
     int Scale = 0;

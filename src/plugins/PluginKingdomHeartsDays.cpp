@@ -1928,6 +1928,17 @@ bool PluginKingdomHeartsDays::renderer_showOriginalUI()
     return false;
 }
 
+// [KHMM-Android] In single screen mode the double-3D composite only ever shows the live
+// 3D layer (ShouldShowBottomScreen picks which screen); the captured image feeds only
+// the hidden screen's bitmap and is never displayed, so the expensive GPU->CPU capture
+// readback can be skipped for the whole scene. In dual screen mode the bottom screen IS
+// the captured image — the readback must run and those scenes pay the cost (upstream's
+// desktop build is slow there too, their issue #321).
+bool PluginKingdomHeartsDays::renderer_skipDisplayCaptureReadback()
+{
+    return SingleScreenMode && GameScene == gameScene_InGameWithDouble3D;
+}
+
 bool PluginKingdomHeartsDays::shouldPreserveDsTopScreenWhileOnDualScreenModeForGameScene()
 {
     return GameScene != gameScene_InGameWithMap &&
