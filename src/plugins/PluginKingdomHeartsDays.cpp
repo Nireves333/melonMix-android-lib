@@ -1463,8 +1463,17 @@ std::vector<ShapeData2D> PluginKingdomHeartsDays::renderer_topScreen_2DShapes() 
 
             if ((GameSceneState & (1 << gameSceneState_dialogVisible)) > 0)
             {
-                renderer_topScreen_2DShapes_component_characterDialog(&shapes, aspectRatio, hudScale);
-                return shapes;
+                // (port fix, not in desktop KHMM) While a Sora vision runs, the game
+                // repurposes the top screen 2D layers, so the dialog shapes sample
+                // garbage: the component's 1000x "background" patch turns opaque and
+                // washes the whole screen in the box color, and the box pieces render
+                // severed. Single screen mode never gets here during a vision (the
+                // bottomScreenSora break above); give dual screen mode the same skip,
+                // scoped to the dialog so gameplay HUD keeps rendering.
+                if ((GameSceneState & (1 << gameSceneState_bottomScreenSora)) == 0) {
+                    renderer_topScreen_2DShapes_component_characterDialog(&shapes, aspectRatio, hudScale);
+                    return shapes;
+                }
             }
 
             if ((GameSceneState & (1 << gameSceneState_cutsceneFromChallengeMission)) > 0)
