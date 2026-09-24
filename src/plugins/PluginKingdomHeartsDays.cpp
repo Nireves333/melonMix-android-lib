@@ -1440,6 +1440,19 @@ std::vector<ShapeData2D> PluginKingdomHeartsDays::renderer_topScreen_2DShapes() 
                 break;
             }
 
+            // (port fix, not in desktop KHMM) Dual screen mode, vision during a scripted
+            // scene (character not controllable): the 2D layers hold cutscene/dialog data,
+            // not the HUD, so the HUD shapes resample dialog-box pixels and the trailing
+            // 1000x "background" patch (line ~1564, sampled at 118,162 = inside the box)
+            // washes the whole screen in the box color. Skip all shapes, like single
+            // screen mode's break above; the top screen falls back to the plain 3D scene
+            // and the dialog reappears when the vision ends. Missions keep their HUD:
+            // visions during live gameplay have the character controllable.
+            if (!SingleScreenMode && (GameSceneState & (1 << gameSceneState_bottomScreenSora)) > 0 &&
+                !isCharacterControllable) {
+                break;
+            }
+
         case gameScene_InGameWithMap:
             if ((GameSceneState & (1 << gameSceneState_cutsceneFromChallengeMission)) > 0)
             {
