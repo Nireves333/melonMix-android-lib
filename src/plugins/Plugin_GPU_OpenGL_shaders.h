@@ -59,7 +59,7 @@ uniform float forcedAspectRatio;
 uniform float hudScale;
 uniform bool showOriginalHud;
 uniform int screenLayout; // 0 = top screen, 1 = bottom screen, 2 = both vertical, 3 = both horizontal
-uniform int brightnessMode; // 0 = default, 1 = top screen, 2 = bottom screen, 3 = horizontal, 4 = no brightness
+uniform int brightnessMode; // 0 = default, 1 = top screen, 2 = bottom screen, 3 = horizontal, 4 = no brightness, 7 = per screen (stock)
 
 uniform int shapeCount;
 
@@ -723,6 +723,14 @@ ivec4 brightness()
     }
     if (brightnessMode == 6) { // brightnessMode_Auto
         return ivec4(0, 0, 0x1, 0);
+    }
+    if (brightnessMode == 7) { // brightnessMode_PerScreen
+        // [KHMM-Android] dual screen mode: each screen keeps its own master brightness
+        // (stock compositor semantics). Default's bottom-screen fade override below is a
+        // single-screen-composite behavior; in a dual layout it blacks out the whole
+        // output whenever the game fades only the bottom screen (Days diary scenes,
+        // in-engine cutscenes with a darkened bottom screen).
+        return ivec4(texelFetch(ScreenTex, ivec2(256*3, int(fTexcoord.y)), 0));
     }
 
     // brightnessMode_Default
