@@ -43,7 +43,8 @@ enum
     brightnessMode_Horizontal,
     brightnessMode_BlackScreen,
     brightnessMode_DisableBrightnessControl,
-    brightnessMode_Auto
+    brightnessMode_Auto,
+    brightnessMode_PerScreen
 };
 
 enum

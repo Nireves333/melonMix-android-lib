@@ -1925,7 +1925,9 @@ int PluginKingdomHeartsReCoded::renderer_screenLayout()
 int PluginKingdomHeartsReCoded::renderer_brightnessMode()
 {
     if (!SingleScreenMode) {
-        return brightnessMode_Default;
+        // (port fix, not in desktop KHMM) Default's bottom-screen fade override blacks
+        // out both screens of a dual layout whenever the game fades only the bottom one.
+        return brightnessMode_PerScreen;
     }
 
     if (GameScene == gameScene_InGameWithMap            ||
@@ -1972,11 +1974,32 @@ int PluginKingdomHeartsReCoded::renderer_brightnessMode()
 
 float PluginKingdomHeartsReCoded::renderer_forcedAspectRatio()
 {
+    if (!SingleScreenMode && shouldPreserveDsTopScreenWhileOnDualScreenModeForGameScene()) {
+        return (4.0/3);
+    }
     return (GameScene == gameScene_CutsceneWithStaticImages) ? (4.0/3) : AspectRatio;
 };
 
 bool PluginKingdomHeartsReCoded::renderer_showOriginalUI() {
+    // (port fix, not in desktop KHMM) Upstream hardcodes false, which leaves dual screen
+    // mode rendering every scene through the single-screen shape walk — the shapes only
+    // fit the packed single-screen presentation, so boot logos, the title screen and
+    // most non-gameplay scenes came out blank or partial. Mirror Days: pass the original
+    // DS top screen through except in the scenes with real dual-screen handling.
+    if (!SingleScreenMode && shouldPreserveDsTopScreenWhileOnDualScreenModeForGameScene()) {
+        return true;
+    }
     return false;
+}
+
+bool PluginKingdomHeartsReCoded::shouldPreserveDsTopScreenWhileOnDualScreenModeForGameScene()
+{
+    return GameScene != gameScene_InGameWithMap &&
+           GameScene != gameScene_InGameDialog &&
+           GameScene != gameScene_InGameOlympusBattle &&
+           GameScene != gameScene_DeathScreen &&
+           GameScene != gameScene_PauseMenu &&
+           GameScene != gameScene_Tutorial;
 }
 
 void PluginKingdomHeartsReCoded::onLoadState() {

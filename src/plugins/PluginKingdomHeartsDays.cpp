@@ -1874,7 +1874,9 @@ int PluginKingdomHeartsDays::renderer_screenLayout()
 int PluginKingdomHeartsDays::renderer_brightnessMode()
 {
     if (!SingleScreenMode) {
-        return brightnessMode_Default;
+        // (port fix, not in desktop KHMM) Default's bottom-screen fade override blacks
+        // out both screens of a dual layout whenever the game fades only the bottom one.
+        return brightnessMode_PerScreen;
     }
 
     if (GameScene == gameScene_PauseMenu                ||
