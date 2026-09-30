@@ -483,7 +483,9 @@ bool Plugin::_superApplyHotkeyToInputMask(u32* InputMask, u32* HotkeyMask, u32* 
 
 bool Plugin::_superApplyAddonKeysToCutsceneMenu(u32* AddonMask, u32* AddonPress, int upBit, int downBit)
 {
-    if (!_ShowingCutsceneSkipMenu) {
+    // [KHMM] also require a running video (upstream gates on the flag alone): if the flag
+    // ever goes stale again, a stale-flag press must not hijack the addon keys in gameplay
+    if (!_IsReplacementCutsceneRunning || !_ShowingCutsceneSkipMenu) {
         return false;
     }
 
@@ -1007,6 +1009,23 @@ void Plugin::resumeReplacementCutsceneThroughPauseMenu()
     hideCutscenePauseMenuOverlay();
 }
 
+// [KHMM] Clear every bit of cutscene skip-menu state once its video is gone, whatever the
+// exit path. The explicit hide mirrors desktop's stopVideo, which hides the overlay widget
+// unconditionally; guarding it keeps the routine event-free in the common no-menu case.
+void Plugin::dismissCutsceneMenuAfterReplacementCutsceneStopped()
+{
+    bool wasShowingMenu = _ShowingCutsceneSkipMenu;
+
+    _ShowingCutsceneSkipMenu = false;
+    _ReplacementCutsceneIsPaused = false;
+    _CutsceneSkipMenuSelection = 0;
+    _LastCutsceneMenuButtons = 0;
+
+    if (wasShowingMenu) {
+        hideCutscenePauseMenuOverlay();
+    }
+}
+
 void Plugin::stopReplacementCutsceneAndResumeGameAfterSkippingIngamePrerenderedCutscene() {
     printf("Stop replacement cutscene and resume game\n");
 
@@ -1021,6 +1040,15 @@ void Plugin::stopReplacementCutsceneAndResumeGameAfterSkippingIngamePrerenderedC
 void Plugin::skipIngamePrerenderedCutsceneAfterReplacementCutsceneFinishesNaturally()
 {
     printf("Resume game after stopping replacement cutscene\n");
+
+    // [KHMM] fix over desktop: the video can end (or fail, below) while the skip menu is
+    // open — pause it in the last fraction of a video and playback's pause latency loses
+    // the race. Without this reset the flag goes stale: _superApplyAddonKeysToCutsceneMenu
+    // resurrects the overlay mid-gameplay and eats the command-menu addon keys, and the
+    // next cutscene's first Start lands in the "Start = Continue" branch and is swallowed.
+    // Desktop masks the visual half by hiding the widget in stopVideo, but keeps the same
+    // stale input state (upstream-candidates item 7).
+    dismissCutsceneMenuAfterReplacementCutsceneStopped();
 
     if (_CutscenesQueue.size() <= 1)
     {
@@ -1044,6 +1072,10 @@ void Plugin::skipIngamePrerenderedCutsceneAfterReplacementCutsceneFinishesNatura
 void Plugin::resumeIngamePrerenderedCutsceneAfterReplacementCutsceneFailedToPlay(std::string error)
 {
     printf("Resume game after replacement cutscene failed to play\n");
+
+    // [KHMM] same stale-state hole as the natural-end path above; this one needs no timing
+    // at all (e.g. the decoder dies while the menu is open)
+    dismissCutsceneMenuAfterReplacementCutsceneStopped();
 
     if (postMessageToOsd != nullptr)
     {
