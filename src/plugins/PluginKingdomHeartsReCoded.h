@@ -143,6 +143,8 @@ private:
     // armed at the tap and fires when the tab probe leaves the map.
     bool swapAwaitingContentFlip = false;
     ivec2 lastKnownMinimapCenter {128, 96}; // for morph geometry when the probe is blind
+    float bottomScreenBrightnessFactor();   // 1 = bottom screen fully lit, 0 = fully faded
+    float viewTuckFollower = 1.0;           // squeeze-away/spring-back walk for the corner view
 
     std::map<GLuint, GLuint[10]> CompGpuLoc{};
     std::map<u32, GLuint[3]> CompGpu3DLoc{};

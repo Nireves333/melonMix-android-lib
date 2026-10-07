@@ -1057,6 +1057,40 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
 
             if ((GameSceneState & (1 << gameSceneState_showHud)) > 0)
             {
+                // Follow the real bottom screen's master-brightness fade: scale the
+                // map/tree box opacity with it and drop the small HUD crops while any
+                // fade is on (their colorToAlpha path ignores shape opacity). Keeps
+                // the mid-rebuild garbage of a tab flip off screen, and the box
+                // fades out/in on the game's own transition rhythm.
+                float bottomFade = bottomScreenBrightnessFactor();
+
+                // Deliberate swap feel: the box squeezes toward its center as it
+                // fades, then springs back open once the new view is lit. The
+                // pull-away tracks the fade directly (it must never outlive the
+                // opacity), but the spring-back walks ~12 frames past the fade so
+                // the motion is actually visible — the fade itself only lasts a few
+                // frames. One self-correcting follower, no swap-machine coupling.
+                // sourceScale must shrink with the quad or the smaller quad would
+                // CROP the content (the FS maps source pixels through sourceScale,
+                // not the quad size).
+                float easedFade = bottomFade * bottomFade * (3.0 - 2.0 * bottomFade);
+                if (easedFade <= viewTuckFollower) {
+                    viewTuckFollower = easedFade;
+                } else {
+                    viewTuckFollower = std::min(easedFade, viewTuckFollower + 1.0f/12.0f);
+                }
+                float viewTuckScale = 0.4 + 0.6 * viewTuckFollower;
+                auto applyViewTuck = [viewTuckScale](ShapeData2D& s) {
+                    float cx = (s.squareFinalCoords.x + s.squareFinalCoords.z) * 0.5;
+                    float cy = (s.squareFinalCoords.y + s.squareFinalCoords.w) * 0.5;
+                    s.squareFinalCoords.x = cx + (s.squareFinalCoords.x - cx) * viewTuckScale;
+                    s.squareFinalCoords.z = cx + (s.squareFinalCoords.z - cx) * viewTuckScale;
+                    s.squareFinalCoords.y = cy + (s.squareFinalCoords.y - cy) * viewTuckScale;
+                    s.squareFinalCoords.w = cy + (s.squareFinalCoords.w - cy) * viewTuckScale;
+                    s.sourceScale.x *= viewTuckScale;
+                    s.sourceScale.y *= viewTuckScale;
+                };
+
                 // A tree -> map swap reframes the box into the map view's frame from
                 // the TAP onward and HOLDS it there (keyed like the map view) until the
                 // game's tab lands, so the raw full-screen map framing never settles on
@@ -1088,7 +1122,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                             .withMargin(0.0, 30.0, 12.0, 0.0)
                             .sourceScale(0.35)
                             .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                            .opacity(0.95)
+                            .opacity(0.95 * bottomFade)
                             .hudScale(hudScale);
                     if (khSwapToMapInFlight) {
                         // map content is sliding into the box: key out the map screen's
@@ -1111,7 +1145,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                                 .withMargin(0.0, 0.0, 0.0, TREE_ENLARGED_MARGIN_BOTTOM)
                                 .sourceScale(TREE_ENLARGED_SCALE)
                                 .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                                .opacity(0.80)
+                                .opacity(0.80 * bottomFade)
                                 .hudScale(hudScale)
                                 .build(aspectRatio);
                         treeShape.transitionTo(enlargedTreeShape, treeDegree);
@@ -1134,7 +1168,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                                 .withMargin(0.0, 30.0, 12.0, 0.0)
                                 .sourceScale(0.65)
                                 .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                                .opacity(0.95)
+                                .opacity(0.95 * bottomFade)
                                 .hudScale(hudScale)
                                 .build(aspectRatio);
                         if (ViewEnlarged)
@@ -1147,7 +1181,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                                     .withMargin(0.0, 0.0, 0.0, 20.0)
                                     .sourceScale(1.5)
                                     .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                                    .opacity(0.80)
+                                    .opacity(0.80 * bottomFade)
                                     .hudScale(hudScale)
                                     .build(aspectRatio);
                             mapSideShape.transitionTo(bigMapSideShape, 1.0);
@@ -1169,6 +1203,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                         }
                     }
 
+                    applyViewTuck(treeShape);
                     shapes.push_back(treeShape);
                 }
 
@@ -1191,7 +1226,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                             .withMargin(0.0, 30.0, 12.0, 0.0)
                             .sourceScale(0.65)
                             .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                            .opacity(0.95)
+                            .opacity(0.95 * bottomFade)
                             .singleColorToAlpha(0xaa, 0xaa, 0xaa)
                             .singleColorToAlpha(0xeb, 0xe3, 0xeb)
                             .singleColorToAlpha(0x30, 0x30, 0x30)
@@ -1208,7 +1243,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                                 .withMargin(0.0, 0.0, 0.0, 20.0)
                                 .sourceScale(1.5)
                                 .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                                .opacity(0.80)
+                                .opacity(0.80 * bottomFade)
                                 .singleColorToAlpha(0xaa, 0xaa, 0xaa)
                                 .singleColorToAlpha(0xeb, 0xe3, 0xeb)
                                 .singleColorToAlpha(0x30, 0x30, 0x30)
@@ -1225,7 +1260,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                             .withMargin(0.0, 30.0, 12.0, 0.0)
                             .sourceScale(0.65*108)
                             .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                            .opacity(0.95)
+                            .opacity(0.95 * bottomFade)
                             .hudScale(hudScale)
                             .build(aspectRatio);
 
@@ -1239,17 +1274,19 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                                 .withMargin(0.0, 0.0, 0.0, 20.0)
                                 .sourceScale(1.5*116)
                                 .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                                .opacity(0.80)
+                                .opacity(0.80 * bottomFade)
                                 .hudScale(hudScale)
                                 .build(aspectRatio);
                         minimapBGShape.transitionTo(bigMapBGShape, fullscreenDegree);
                     }
 
+                    applyViewTuck(minimapShape);
+                    applyViewTuck(minimapBGShape);
                     shapes.push_back(minimapShape);
                     shapes.push_back(minimapBGShape);
                 }
 
-                if ((GameSceneState & (1 << gameSceneState_showFloorCounter)) > 0)
+                if ((GameSceneState & (1 << gameSceneState_showFloorCounter)) > 0 && bottomFade > 0.999)
                 {
                     // floor label
                     shapes.push_back(ShapeBuilder2D::square()
@@ -1276,7 +1313,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                             .build(aspectRatio));
                 }
 
-                if ((GameSceneState & (1 << gameSceneState_showEnemiesCounter)) > 0)
+                if ((GameSceneState & (1 << gameSceneState_showEnemiesCounter)) > 0 && bottomFade > 0.999)
                 {
                     float enemiesCounterDiagonalMergeFactor = 5.0;
 
@@ -1306,7 +1343,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                             .build(aspectRatio));
                 }
 
-                if ((GameSceneState & (1 << gameSceneState_showBottomScreenMissionInformation)) > 0)
+                if ((GameSceneState & (1 << gameSceneState_showBottomScreenMissionInformation)) > 0 && bottomFade > 0.999)
                 {
                     renderer_composition_component_missionInformationFromBottomScreen(&shapes, aspectRatio, hudScale);
                 }
@@ -2693,6 +2730,31 @@ int PluginKingdomHeartsReCoded::bottomScreenTabState()
         return -1;
     }
     return mapLabel ? 1 : 0;
+}
+
+// [KHMM-Android] How faded the REAL bottom screen currently is: 1.0 fully lit, 0.0
+// fully faded to black/white (master brightness, decoded like GPU2D_Soft applies it).
+// The game hides bottom-screen rebuilds (e.g. the TREE/MAP tab flip) behind this
+// fade; the single-screen composite follows the TOP screen's brightness, so shapes
+// sampling the bottom screen must follow the bottom fade by hand or they show the
+// mid-rebuild framebuffer the fade is meant to cover.
+float PluginKingdomHeartsReCoded::bottomScreenBrightnessFactor()
+{
+    bool bottomIsUnitB = ((nds->PowerControl9 >> 15) & 1) == 1; // display swap: A on top
+    u16 mb = bottomIsUnitB ? nds->GPU.GPU2D_B.MasterBrightness : nds->GPU.GPU2D_A.MasterBrightness;
+    u32 mode = (mb >> 14) & 0x3;
+    if (mode != 1 && mode != 2) { // 1 = fade to white, 2 = fade to black
+        return 1.0;
+    }
+    u32 factor = mb & 0x1F;
+    if (factor > 16) factor = 16;
+    float lit = 1.0 - ((float)factor) / 16.0;
+    // The game swaps the bottom screen's content mid-fade once the panel is
+    // "dark enough" (seen during the TREE/MAP tab flip), so a linear follow
+    // still shows a faint one-frame ghost of the incoming screen. Treat the
+    // dark end as fully dark and renormalize the rest so the fade stays smooth.
+    const float darkFloor = 0.4;
+    return lit <= darkFloor ? 0.0 : (lit - darkFloor) / (1.0 - darkFloor);
 }
 
 // A tap on the map-toggle button. Single screen: swap WHAT the view shows, map <->
