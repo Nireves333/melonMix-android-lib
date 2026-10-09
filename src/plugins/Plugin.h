@@ -242,6 +242,14 @@ public:
     virtual void applyAddonKeysToInputMaskOrTouchControls(u32* InputMask, u16* touchX, u16* touchY, bool* isTouching, u32* AddonMask, u32* AddonPress) {};
 
     virtual bool overrideMouseTouchCoords(int width, int height, int& x, int& y, bool& touching) {return false;}
+    // Single-screen tree view (Re:Coded): true while the composite is showing the bottom
+    // screen's ENLARGED overclock tree, so the frontend can pass touches through to the
+    // DS screen (the small corner tree deliberately takes no touches).
+    virtual bool isTreeViewActive() { return false; }
+    // The enlarged tree box as fractions of the composite output (x, y, width, height in
+    // 0..1), so the frontend's touch passthrough matches the shape wherever it is tuned
+    // to sit. Only meaningful while isTreeViewActive().
+    virtual bool getTreeViewRect(float& x, float& y, float& w, float& h) { return false; }
     void _superApplyTouchKeyMaskToTouchControls(u16* touchX, u16* touchY, bool* isTouching, u32 TouchKeyMask, u16 sensitivity, bool resetOnEdge);
     virtual void applyTouchKeyMaskToTouchControls(u16* touchX, u16* touchY, bool* isTouching, u32 TouchKeyMask);
     virtual bool shouldRumble() {return false;}

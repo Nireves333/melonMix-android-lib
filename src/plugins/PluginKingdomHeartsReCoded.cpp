@@ -13,6 +13,29 @@ u32 PluginKingdomHeartsReCoded::jpGamecode = 1245268802;
 #define ASPECT_RATIO_ADDRESS_EU 0x0202A824
 #define ASPECT_RATIO_ADDRESS_JP 0x0202A728
 
+// The bottom screen's TREE/MAP tab (right edge of the map panel). Touch target and the
+// tab-label probe pixels were measured on-device (2026-10-01): tapping (225,150) flips
+// the view both ways; at y=148 the label glyphs light x=214 when the tab reads "MAP"
+// (tree view showing) and x=230 when it reads "TREE" (map view showing).
+#define TREE_TAB_TOUCH_X 225
+#define TREE_TAB_TOUCH_Y 150
+#define TREE_TAB_LABEL_PROBE_Y 148
+#define TREE_TAB_MAP_LABEL_PROBE_X 214
+#define TREE_TAB_TREE_LABEL_PROBE_X 230
+#define TREE_TAB_LABEL_COLOR 0x103e3e3e
+
+// Enlarged tree view footprint (raw shape units, like the fullscreen map's 232x116 at
+// 1.5): 256x192 at 1.15 is about the enlarged map's area, a touch taller. Plain
+// centered (no upward lift like the map: the tree's header tabs would slide under the
+// top soft-button strip). Tuning knobs — the frontend touch box follows automatically
+// via getTreeViewRect().
+#define TREE_ENLARGED_SCALE 1.15f
+#define TREE_ENLARGED_MARGIN_BOTTOM 0.0f
+// Grow/shrink animation length, matching the fullscreen map's transition walk
+#define TREE_TRANSITION_DURATION 20
+// Swap handoff morph length (bottom-screen box <-> map view reframe)
+#define SWAP_MORPH_DURATION 10
+
 // 0x0d9eaa00 => main menu
 // 0x0da75400 => config
 // 0x00149600 => debug reports
@@ -220,7 +243,9 @@ enum
     gameSceneState_comboLimitVisible,
     gameSceneState_speedComboFinisherVisible,
     gameSceneState_starRaveFinisherVisible,
-    gameSceneState_spinnerSawFinisherVisible
+    gameSceneState_spinnerSawFinisherVisible,
+    gameSceneState_showFullscreenTree,
+    gameSceneState_showSmallTree
 };
 
 enum
@@ -235,7 +260,8 @@ enum
     HK_HUDToggle,
     HK_FullscreenMapToggle,
     HK_ReplacementTexturesToggle,
-    HK_OpenSettings
+    HK_OpenSettings,
+    HK_ViewEnlargeToggle
 };
 
 PluginKingdomHeartsReCoded::PluginKingdomHeartsReCoded(u32 gameCode)
@@ -273,7 +299,8 @@ PluginKingdomHeartsReCoded::PluginKingdomHeartsReCoded(u32 gameCode)
         "HK_HUDToggle",
         "HK_FullscreenMapToggle",
         "HK_ReplacementTexturesToggle",
-        "HK_OpenSettings"
+        "HK_OpenSettings",
+        "HK_ViewEnlargeToggle"
     };
     customKeyMappingLabels = {
         "Switch Target - Left",
@@ -286,7 +313,8 @@ PluginKingdomHeartsReCoded::PluginKingdomHeartsReCoded(u32 gameCode)
         "HUD Toggle",
         "Fullscreen Map Toggle",
         "Toggle Replacement Textures",
-        "Open Settings"
+        "Open Settings",
+        "Enlarge Map/Tree View"
     };
 
     Cutscenes = std::array<Plugins::CutsceneEntry, 15> {{
@@ -1003,11 +1031,187 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                 }
             }
 
+            // same walk for the tree's corner <-> enlarged morph
+            if ((GameSceneState & (1 << gameSceneState_showFullscreenTree)) > 0)
+            {
+                treeTransitionStep += 1;
+                if (treeTransitionStep > TREE_TRANSITION_DURATION) {
+                    treeTransitionStep = TREE_TRANSITION_DURATION;
+                }
+            }
+            else
+            {
+                treeTransitionStep -= 1;
+                if (treeTransitionStep < 0) {
+                    treeTransitionStep = 0;
+                }
+            }
+
+            // swap handoff morphs tick down here (one-shot walks)
+            if (swapMorphToMapStep > 0) {
+                swapMorphToMapStep -= 1;
+            }
+            if (swapMorphFromMapStep > 0) {
+                swapMorphFromMapStep -= 1;
+            }
+
             if ((GameSceneState & (1 << gameSceneState_showHud)) > 0)
             {
-                if ((GameSceneState & (1 << gameSceneState_showMinimap)) > 0) {
+                // Follow the real bottom screen's master-brightness fade: scale the
+                // map/tree box opacity with it and drop the small HUD crops while any
+                // fade is on (their colorToAlpha path ignores shape opacity). Keeps
+                // the mid-rebuild garbage of a tab flip off screen, and the box
+                // fades out/in on the game's own transition rhythm.
+                float bottomFade = bottomScreenBrightnessFactor();
+
+                // Deliberate swap feel: the box squeezes toward its center as it
+                // fades, then springs back open once the new view is lit. The
+                // pull-away tracks the fade directly (it must never outlive the
+                // opacity), but the spring-back walks ~12 frames past the fade so
+                // the motion is actually visible — the fade itself only lasts a few
+                // frames. One self-correcting follower, no swap-machine coupling.
+                // sourceScale must shrink with the quad or the smaller quad would
+                // CROP the content (the FS maps source pixels through sourceScale,
+                // not the quad size).
+                float easedFade = bottomFade * bottomFade * (3.0 - 2.0 * bottomFade);
+                if (easedFade <= viewTuckFollower) {
+                    viewTuckFollower = easedFade;
+                } else {
+                    viewTuckFollower = std::min(easedFade, viewTuckFollower + 1.0f/12.0f);
+                }
+                float viewTuckScale = 0.4 + 0.6 * viewTuckFollower;
+                auto applyViewTuck = [viewTuckScale](ShapeData2D& s) {
+                    float cx = (s.squareFinalCoords.x + s.squareFinalCoords.z) * 0.5;
+                    float cy = (s.squareFinalCoords.y + s.squareFinalCoords.w) * 0.5;
+                    s.squareFinalCoords.x = cx + (s.squareFinalCoords.x - cx) * viewTuckScale;
+                    s.squareFinalCoords.z = cx + (s.squareFinalCoords.z - cx) * viewTuckScale;
+                    s.squareFinalCoords.y = cy + (s.squareFinalCoords.y - cy) * viewTuckScale;
+                    s.squareFinalCoords.w = cy + (s.squareFinalCoords.w - cy) * viewTuckScale;
+                    s.sourceScale.x *= viewTuckScale;
+                    s.sourceScale.y *= viewTuckScale;
+                };
+
+                // A tree -> map swap reframes the box into the map view's frame from
+                // the TAP onward and HOLDS it there (keyed like the map view) until the
+                // game's tab lands, so the raw full-screen map framing never settles on
+                // screen — the flip animation plays inside an already-map-shaped frame.
+                bool khSwapToMapInFlight = SingleScreenMode && !TreeViewSelected &&
+                        (wantedBottomTab == 0 || enlargeMapPending || swapMorphToMapStep > 0);
+
+                if ((GameSceneState & ((1 << gameSceneState_showFullscreenTree) |
+                                       (1 << gameSceneState_showSmallTree))) > 0
+                        || khSwapToMapInFlight) {
+                    // tree view: the whole bottom screen, morphing between the minimap's
+                    // corner slot (glance view) and a center box roughly the enlarged
+                    // map's footprint, with the map's transition walk (treeTransitionStep
+                    // advances at case entry next to the map's). The enlarged geometry is
+                    // mirrored in getTreeViewRect() for the frontend's touch passthrough
+                    // — keep the two in sync. During a swap handoff the box additionally
+                    // morphs from/into the map view's frame instead of cutting.
+                    float treeDegree = ((float)treeTransitionStep) / TREE_TRANSITION_DURATION;
+                    if (khSwapToMapInFlight || swapMorphFromMapStep > 0) {
+                        treeDegree = ViewEnlarged ? 1.0f : 0.0f; // swap keeps its size
+                    }
+
+                    ShapeBuilder2D treeBoxBuilder = ShapeBuilder2D::square();
+                    treeBoxBuilder
+                            .fromBottomScreen()
+                            .fromPosition(0, 0)
+                            .withSize(256, 192)
+                            .placeAtCorner(corner_TopRight)
+                            .withMargin(0.0, 30.0, 12.0, 0.0)
+                            .sourceScale(0.35)
+                            .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
+                            .opacity(0.95 * bottomFade)
+                            .hudScale(hudScale);
+                    if (khSwapToMapInFlight) {
+                        // map content is sliding into the box: key out the map screen's
+                        // paper colors (like the map view does) so every swap frame
+                        // already looks integrated, never like the raw DS screen
+                        treeBoxBuilder
+                                .singleColorToAlpha(0xaa, 0xaa, 0xaa)
+                                .singleColorToAlpha(0xeb, 0xe3, 0xeb)
+                                .singleColorToAlpha(0x30, 0x30, 0x30);
+                    }
+                    ShapeData2D treeShape = treeBoxBuilder.build(aspectRatio);
+
+                    if (treeDegree > 0)
+                    {
+                        ShapeData2D enlargedTreeShape = ShapeBuilder2D::square()
+                                .fromBottomScreen()
+                                .fromPosition(0, 0)
+                                .withSize(256, 192)
+                                .placeAtCorner(corner_Center)
+                                .withMargin(0.0, 0.0, 0.0, TREE_ENLARGED_MARGIN_BOTTOM)
+                                .sourceScale(TREE_ENLARGED_SCALE)
+                                .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
+                                .opacity(0.80 * bottomFade)
+                                .hudScale(hudScale)
+                                .build(aspectRatio);
+                        treeShape.transitionTo(enlargedTreeShape, treeDegree);
+                    }
+
+                    if (khSwapToMapInFlight || swapMorphFromMapStep > 0)
+                    {
+                        // the map view's frame at the size the swap keeps: the corner
+                        // minimap, or fully transitioned to the fullscreen map (at
+                        // degree 1 the minimap base is fully lerped away, so a stale
+                        // center cannot leak into the enlarged geometry). The center is
+                        // the last one cached off live map content — the live probe may
+                        // be blind mid-flip.
+                        ivec2 _morphMinimapCenter = lastKnownMinimapCenter;
+                        ShapeData2D mapSideShape = ShapeBuilder2D::square()
+                                .fromBottomScreen()
+                                .fromPosition(_morphMinimapCenter.x - 54, _morphMinimapCenter.y - 54)
+                                .withSize(108, 108)
+                                .placeAtCorner(corner_TopRight)
+                                .withMargin(0.0, 30.0, 12.0, 0.0)
+                                .sourceScale(0.65)
+                                .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
+                                .opacity(0.95 * bottomFade)
+                                .hudScale(hudScale)
+                                .build(aspectRatio);
+                        if (ViewEnlarged)
+                        {
+                            ShapeData2D bigMapSideShape = ShapeBuilder2D::square()
+                                    .fromBottomScreen()
+                                    .fromPosition(12, 32)
+                                    .withSize(232, 116)
+                                    .placeAtCorner(corner_Center)
+                                    .withMargin(0.0, 0.0, 0.0, 20.0)
+                                    .sourceScale(1.5)
+                                    .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
+                                    .opacity(0.80 * bottomFade)
+                                    .hudScale(hudScale)
+                                    .build(aspectRatio);
+                            mapSideShape.transitionTo(bigMapSideShape, 1.0);
+                        }
+
+                        if (khSwapToMapInFlight)
+                        {
+                            // ramp into the map frame over the morph walk, then HOLD it
+                            // there for however long the game's tab flip still takes
+                            float degree = swapMorphToMapStep > 0
+                                    ? 1.0f - ((float)swapMorphToMapStep) / SWAP_MORPH_DURATION
+                                    : 1.0f;
+                            treeShape.transitionTo(mapSideShape, degree);
+                        }
+                        else
+                        {
+                            float degree = ((float)swapMorphFromMapStep) / SWAP_MORPH_DURATION;
+                            treeShape.transitionTo(mapSideShape, degree);
+                        }
+                    }
+
+                    applyViewTuck(treeShape);
+                    shapes.push_back(treeShape);
+                }
+
+                // (during a swap into the map, the box draws the map view's frame itself)
+                if ((GameSceneState & (1 << gameSceneState_showMinimap)) > 0 && !khSwapToMapInFlight) {
                     // minimap
                     ivec2 _minimapCenter = minimapCenter();
+                    lastKnownMinimapCenter = _minimapCenter; // for swap morph geometry
                     float fullscreenDegree = ((float)fullscreenMapTransitionStep) / fullscreenMapTransitionDuration;
                     if ((GameSceneState & (1 << gameSceneState_comboLimitVisible)) > 0)
                     {
@@ -1022,7 +1226,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                             .withMargin(0.0, 30.0, 12.0, 0.0)
                             .sourceScale(0.65)
                             .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                            .opacity(0.95)
+                            .opacity(0.95 * bottomFade)
                             .singleColorToAlpha(0xaa, 0xaa, 0xaa)
                             .singleColorToAlpha(0xeb, 0xe3, 0xeb)
                             .singleColorToAlpha(0x30, 0x30, 0x30)
@@ -1039,7 +1243,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                                 .withMargin(0.0, 0.0, 0.0, 20.0)
                                 .sourceScale(1.5)
                                 .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                                .opacity(0.80)
+                                .opacity(0.80 * bottomFade)
                                 .singleColorToAlpha(0xaa, 0xaa, 0xaa)
                                 .singleColorToAlpha(0xeb, 0xe3, 0xeb)
                                 .singleColorToAlpha(0x30, 0x30, 0x30)
@@ -1056,7 +1260,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                             .withMargin(0.0, 30.0, 12.0, 0.0)
                             .sourceScale(0.65*108)
                             .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                            .opacity(0.95)
+                            .opacity(0.95 * bottomFade)
                             .hudScale(hudScale)
                             .build(aspectRatio);
 
@@ -1070,17 +1274,19 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                                 .withMargin(0.0, 0.0, 0.0, 20.0)
                                 .sourceScale(1.5*116)
                                 .fadeBorderSize(5.0, 5.0, 5.0, 5.0)
-                                .opacity(0.80)
+                                .opacity(0.80 * bottomFade)
                                 .hudScale(hudScale)
                                 .build(aspectRatio);
                         minimapBGShape.transitionTo(bigMapBGShape, fullscreenDegree);
                     }
 
+                    applyViewTuck(minimapShape);
+                    applyViewTuck(minimapBGShape);
                     shapes.push_back(minimapShape);
                     shapes.push_back(minimapBGShape);
                 }
 
-                if ((GameSceneState & (1 << gameSceneState_showFloorCounter)) > 0)
+                if ((GameSceneState & (1 << gameSceneState_showFloorCounter)) > 0 && bottomFade > 0.999)
                 {
                     // floor label
                     shapes.push_back(ShapeBuilder2D::square()
@@ -1107,7 +1313,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                             .build(aspectRatio));
                 }
 
-                if ((GameSceneState & (1 << gameSceneState_showEnemiesCounter)) > 0)
+                if ((GameSceneState & (1 << gameSceneState_showEnemiesCounter)) > 0 && bottomFade > 0.999)
                 {
                     float enemiesCounterDiagonalMergeFactor = 5.0;
 
@@ -1137,7 +1343,7 @@ std::vector<ShapeData2D> PluginKingdomHeartsReCoded::renderer_composition()
                             .build(aspectRatio));
                 }
 
-                if ((GameSceneState & (1 << gameSceneState_showBottomScreenMissionInformation)) > 0)
+                if ((GameSceneState & (1 << gameSceneState_showBottomScreenMissionInformation)) > 0 && bottomFade > 0.999)
                 {
                     renderer_composition_component_missionInformationFromBottomScreen(&shapes, aspectRatio, hudScale);
                 }
@@ -1742,6 +1948,8 @@ std::vector<ShapeData3D> PluginKingdomHeartsReCoded::renderer_topScreen_3DShapes
 
 int PluginKingdomHeartsReCoded::renderer_gameSceneState() {
     int state = 0;
+    // declared at function scope (the case bodies are not brace-scoped)
+    bool khBottomScreenBoxVisible = false;
 
     switch (GameScene) {
         case gameScene_IntroLoadMenu:
@@ -1811,12 +2019,30 @@ int PluginKingdomHeartsReCoded::renderer_gameSceneState() {
                 break;
             }
 
+            if (GameScene == gameScene_InGameWithMap && SingleScreenMode && !HideAllHUD) {
+                // The bottom-screen box shows the tree — and stays up THROUGH a map<->
+                // tree swap (the game's own tab-flip animation plays inside it), so the
+                // swap never leaves a hole where a view used to be. But it only ever
+                // shows NON-map content (tab != 0): over settled map content the proper
+                // map view renders instead, so the raw DS map screen is never exposed.
+                int bottomTab = bottomScreenTabState();
+                bool treeShowing = TreeViewSelected && bottomTab == 1;
+                bool swapInFlight = (wantedBottomTab != -1 || enlargeMapPending) && bottomTab != 0;
+                if ((treeShowing || swapInFlight) && !ShowFullscreenMap) {
+                    khBottomScreenBoxVisible = true;
+                    state |= (1 << (ViewEnlarged ? gameSceneState_showFullscreenTree
+                                                 : gameSceneState_showSmallTree));
+                }
+            }
+
             if (GameScene == gameScene_InGameWithMap && isMinimapVisible()) {
                 if (ShowFullscreenMap) {
                     state |= (1 << gameSceneState_showFullscreenMap);
                 }
 
-                if (ShowMap) {
+                // the box replaces the corner minimap while it is up (tab==0 frames of a
+                // swap would otherwise draw the map twice, small and boxed)
+                if (ShowMap && !khBottomScreenBoxVisible) {
                     state |= (1 << gameSceneState_showMinimap);
 
                     if (isBugSector())
@@ -2063,8 +2289,44 @@ void PluginKingdomHeartsReCoded::applyAddonKeysToInputMaskOrTouchControls(u32* I
     if ((*AddonPress) & (1 << HK_ReplacementTexturesToggle)) {
         replacementTexturesToggle();
     }
-    if ((*AddonPress) & (1 << HK_FullscreenMapToggle)) {
-        toggleFullscreenMap();
+    // Tap/hold split on the map-toggle button: a tap swaps the corner view map <-> tree
+    // (size untouched; HK_ViewEnlargeToggle owns that), a hold sends the game a real
+    // Select press (its native combined camera + minimap zoom), which the recommended
+    // controller layout otherwise makes unreachable (the physical Select button is
+    // bound to this addon key).
+    {
+        bool mapTogglePressed = ((*AddonPress) & (1 << HK_FullscreenMapToggle)) != 0;
+        bool mapToggleHeld = ((*AddonMask) & (1 << HK_FullscreenMapToggle)) != 0;
+        if (mapTogglePressed) {
+            mapToggleHeldFrames = 0;
+            mapToggleHoldConsumed = false;
+        }
+        else if (mapToggleHeld && mapToggleHeldFrames >= 0) {
+            mapToggleHeldFrames++;
+            if (!mapToggleHoldConsumed && mapToggleHeldFrames >= 20) {
+                mapToggleHoldConsumed = true;
+                fullscreenMapSelectPressStep = 3;
+            }
+        }
+        else if (!mapToggleHeld && mapToggleHeldFrames >= 0) {
+            if (!mapToggleHoldConsumed) {
+                toggleMapTreeView();
+            }
+            mapToggleHeldFrames = -1;
+        }
+    }
+    if ((*AddonPress) & (1 << HK_ViewEnlargeToggle)) {
+        toggleViewEnlarge();
+    }
+    refreshViewSizeForScene();
+    driveBottomScreenTab();
+    if (treeTabTapStep > 0) {
+        treeTabTapStep--;
+        if (treeTabTapStep > 0) {
+            nds->TouchScreen(TREE_TAB_TOUCH_X, TREE_TAB_TOUCH_Y);
+        } else {
+            nds->ReleaseScreen();
+        }
     }
     if ((fullscreenMapSelectPressStep--) > 0) {
         *InputMask &= ~(1<<2); // select
@@ -2428,6 +2690,16 @@ void PluginKingdomHeartsReCoded::hudToggle()
         ShowFullscreenMap = false;
         HideAllHUD = true;
     }
+    if (TreeViewSelected) {
+        // Leaving the tree view through the HUD toggle: bring the game's tab back to
+        // the map so the minimap is there when the HUD comes back.
+        TreeViewSelected = false;
+        wantedBottomTab = 0;
+        treeTabRetryFrames = 150;
+    }
+    ViewEnlarged = false;
+    swapAwaitingContentFlip = false;
+    restoreLatchedZoom(); // HUD toggle also leaves the enlarged world
 }
 
 void PluginKingdomHeartsReCoded::toggleFullscreenMap()
@@ -2444,6 +2716,318 @@ void PluginKingdomHeartsReCoded::toggleFullscreenMap()
     }
 
     fullscreenMapShouldPreserveZoom = (ShowFullscreenMap && isZoomedOut);
+}
+
+// Which view the game's bottom screen is actually showing, read from the TREE/MAP tab
+// label: -1 unknown (tab not readable right now), 0 map view, 1 tree view. The game owns
+// the tab, so every consumer trusts this probe over our own intent flags.
+int PluginKingdomHeartsReCoded::bottomScreenTabState()
+{
+    u32* bs = bottomScreen2DTexture();
+    bool mapLabel  = getPixel(bs, TREE_TAB_MAP_LABEL_PROBE_X,  TREE_TAB_LABEL_PROBE_Y, 0) == TREE_TAB_LABEL_COLOR;
+    bool treeLabel = getPixel(bs, TREE_TAB_TREE_LABEL_PROBE_X, TREE_TAB_LABEL_PROBE_Y, 0) == TREE_TAB_LABEL_COLOR;
+    if (mapLabel == treeLabel) {
+        return -1;
+    }
+    return mapLabel ? 1 : 0;
+}
+
+// [KHMM-Android] How faded the REAL bottom screen currently is: 1.0 fully lit, 0.0
+// fully faded to black/white (master brightness, decoded like GPU2D_Soft applies it).
+// The game hides bottom-screen rebuilds (e.g. the TREE/MAP tab flip) behind this
+// fade; the single-screen composite follows the TOP screen's brightness, so shapes
+// sampling the bottom screen must follow the bottom fade by hand or they show the
+// mid-rebuild framebuffer the fade is meant to cover.
+float PluginKingdomHeartsReCoded::bottomScreenBrightnessFactor()
+{
+    bool bottomIsUnitB = ((nds->PowerControl9 >> 15) & 1) == 1; // display swap: A on top
+    u16 mb = bottomIsUnitB ? nds->GPU.GPU2D_B.MasterBrightness : nds->GPU.GPU2D_A.MasterBrightness;
+    u32 mode = (mb >> 14) & 0x3;
+    if (mode != 1 && mode != 2) { // 1 = fade to white, 2 = fade to black
+        return 1.0;
+    }
+    u32 factor = mb & 0x1F;
+    if (factor > 16) factor = 16;
+    float lit = 1.0 - ((float)factor) / 16.0;
+    // The game swaps the bottom screen's content mid-fade once the panel is
+    // "dark enough" (seen during the TREE/MAP tab flip), so a linear follow
+    // still shows a faint one-frame ghost of the incoming screen. Treat the
+    // dark end as fully dark and renormalize the rest so the fade stays smooth.
+    const float darkFloor = 0.4;
+    return lit <= darkFloor ? 0.0 : (lit - darkFloor) / (1.0 - darkFloor);
+}
+
+// A tap on the map-toggle button. Single screen: swap WHAT the view shows, map <->
+// tree, at whatever size is currently selected (ViewEnlarged persists across swaps).
+// Dual screen: both screens are real, so the button just flips the game's own tab
+// (same as tapping it on the touchscreen), map <-> tree.
+void PluginKingdomHeartsReCoded::toggleMapTreeView()
+{
+    if (!SingleScreenMode) {
+        int tab = bottomScreenTabState();
+        if (tab != -1) {
+            wantedBottomTab = (tab == 1) ? 0 : 1;
+            treeTabRetryFrames = 150;
+        }
+        return;
+    }
+
+    if (bottomScreenTabState() == -1 && !TreeViewSelected) {
+        // No TREE/MAP tab on the bottom screen right now (bug sectors swap it for the
+        // mission-information panel) — there is nothing to drive, so a blind swap would
+        // just show that panel in the box for the retry budget and then snap back.
+        // Ignore the tap; leaving the tree (tab unreadable mid-flip) stays allowed.
+        return;
+    }
+
+    if (TreeViewSelected) {
+        // tree -> map (small = minimap, enlarged = fullscreen map). The fullscreen-map
+        // entry is DEFERRED until the tab is really back on the map: toggleFullscreenMap
+        // probes the minimap zoom from bottom-screen pixels, which are tree content
+        // right now (garbage probe + a possible spurious Select into the tree).
+        TreeViewSelected = false;
+        wantedBottomTab = 0;
+        treeTabRetryFrames = 150;
+        enlargeMapPending = ViewEnlarged;
+        // treeTransitionStep untouched: the box reframes from its current size.
+        // The into-the-map-frame morph starts NOW (not at tab landing): the box ramps
+        // into the map view's frame while the game's flip plays inside it, and holds
+        // there until the real map view takes over in the same geometry.
+        swapMorphToMapStep = SWAP_MORPH_DURATION;
+        swapMorphFromMapStep = 0;      // cancel an opposite morph from a rapid double-swap
+        swapAwaitingContentFlip = false;
+    }
+    else {
+        // map -> tree (the size flag carries over). The PROPER map view stays on
+        // screen for now: the handoff to the box happens when the game's tab really
+        // starts flipping (refreshViewSizeForScene), so the raw DS map screen never
+        // shows through the box, and no zoom-restoring Select is ever injected here.
+        TreeViewSelected = true;
+        wantedBottomTab = 1;
+        treeTabRetryFrames = 150;
+        enlargeMapPending = false;
+        swapAwaitingContentFlip = true;
+        if (ViewEnlarged) {
+            treeTransitionStep = TREE_TRANSITION_DURATION;
+        }
+        swapMorphToMapStep = 0;
+    }
+}
+
+// The enlarge button: toggles the SIZE of whatever the corner view currently shows.
+// Map: the upstream fullscreen-map machinery (transition animation + auto zoom-sync).
+// Tree: corner glance box <-> the readable centered 4:3 box.
+void PluginKingdomHeartsReCoded::toggleViewEnlarge()
+{
+    if (!SingleScreenMode || HideAllHUD || GameScene != gameScene_InGameWithMap) {
+        return; // dual mode shows everything already; no view to enlarge otherwise
+    }
+    ViewEnlarged = !ViewEnlarged;
+    if (!TreeViewSelected) {
+        int tab = bottomScreenTabState();
+        if (tab == 0 || isMinimapVisible()) {
+            // map content is on the bottom screen (tab confirmed, or the minimap probe
+            // sees it — bug sectors have no tab but do show the map)
+            toggleFullscreenMap(); // its zoom sync makes the latch moot either way
+            fullscreenMapZoomLatched = false;
+        }
+        else if (tab == 1) {
+            // The game was somehow left on the tree tab: bring the map back first and
+            // defer the fullscreen-map flip (growing only — see toggleMapTreeView).
+            wantedBottomTab = 0;
+            treeTabRetryFrames = 150;
+            if (ViewEnlarged && !ShowFullscreenMap) {
+                enlargeMapPending = true;
+            }
+            else if (ShowFullscreenMap) {
+                ShowFullscreenMap = false; // shrink needs no zoom probe
+            }
+        }
+        else {
+            ViewEnlarged = !ViewEnlarged; // unknown bottom content: nothing to enlarge
+        }
+    }
+    else if (!ViewEnlarged) {
+        // Shrinking while on the tree: the map is not on screen, but the native zoom
+        // may still be latched out from the enlarged map — restore it now (a Select
+        // press works during the tree tab; the camera zoom is a field-level state).
+        restoreLatchedZoom();
+    }
+}
+
+// Restore the native Select zoom that an enlarged-map session left zoomed out, when
+// leaving the enlarged world by a path that bypasses toggleFullscreenMap's own sync.
+void PluginKingdomHeartsReCoded::restoreLatchedZoom()
+{
+    if (!fullscreenMapZoomLatched) {
+        return;
+    }
+    fullscreenMapZoomLatched = false;
+    if (!fullscreenMapShouldPreserveZoom) {
+        fullscreenMapSelectPressStep = 3;
+    }
+}
+
+// Scene changes (dialog, cutscene, area load, pause...) shrink the view back to the
+// corner slot so nothing big covers the next scene; the map/tree CHOICE persists, and
+// the shrink (plus its possible zoom-restoring Select press) waits until we are back
+// in gameplay, where injecting Select is safe.
+void PluginKingdomHeartsReCoded::refreshViewSizeForScene()
+{
+    if (GameScene != lastViewSizeScene) {
+        if (lastViewSizeScene != -1 && SingleScreenMode && (ViewEnlarged || ShowFullscreenMap)) {
+            viewSizeResetPending = true;
+        }
+        lastViewSizeScene = GameScene;
+        // Keep the tree CHOICE alive across the transition: the game may reset its own
+        // tab to the map, so re-request the tree once we are back (one-shot — a manual
+        // MAP-tab tap mid-gameplay must still win via the honesty sync).
+        if (GameScene == gameScene_InGameWithMap && SingleScreenMode &&
+                TreeViewSelected && wantedBottomTab == -1) {
+            wantedBottomTab = 1;
+            treeTabRetryFrames = 150;
+        }
+    }
+    // A map->tree swap hands off from the proper map view to the box the moment the
+    // game's tab really starts flipping (probe leaves the map) — never earlier, so the
+    // raw DS map screen is never exposed inside the box over settled map content.
+    if (swapAwaitingContentFlip) {
+        if (!TreeViewSelected) {
+            swapAwaitingContentFlip = false; // swap reversed before the flip started
+        }
+        else if (GameScene == gameScene_InGameWithMap && bottomScreenTabState() != 0) {
+            swapAwaitingContentFlip = false;
+            if (ShowFullscreenMap) {
+                ShowFullscreenMap = false; // raw: the native zoom stays latched
+                fullscreenMapZoomLatched = true;
+                fullscreenMapTransitionStep = 0;
+            }
+            // reframe the outgoing map view into the box instead of cutting
+            swapMorphFromMapStep = SWAP_MORPH_DURATION;
+            swapMorphToMapStep = 0;
+        }
+    }
+
+    if (viewSizeResetPending && GameScene == gameScene_InGameWithMap) {
+        viewSizeResetPending = false;
+        enlargeMapPending = false;
+        swapAwaitingContentFlip = false;
+        ViewEnlarged = false;
+        if (ShowFullscreenMap) {
+            toggleFullscreenMap();
+            fullscreenMapZoomLatched = false;
+        }
+        else {
+            restoreLatchedZoom(); // the scene cut may land on the tree side
+        }
+    }
+    // Deferred fullscreen-map entry (set when enlarging/swapping to the map while the
+    // game's tab was still on the tree): flip once the map content is really there.
+    if (enlargeMapPending && GameScene == gameScene_InGameWithMap &&
+            !TreeViewSelected && ViewEnlarged && bottomScreenTabState() == 0) {
+        enlargeMapPending = false;
+        if (!ShowFullscreenMap) {
+            if (fullscreenMapZoomLatched) {
+                // swap re-entry: the native zoom is still where the fullscreen map left
+                // it, so raise the flag raw — no Select injection, no camera lurch
+                ShowFullscreenMap = true;
+            }
+            else {
+                toggleFullscreenMap();
+            }
+            // land at full size: the minimap-grow walk must not replay on a swap (the
+            // box has already reframed into this exact geometry and hands off cleanly)
+            fullscreenMapTransitionStep = TREE_TRANSITION_DURATION;
+        }
+    }
+    if (enlargeMapPending && (TreeViewSelected || !ViewEnlarged)) {
+        enlargeMapPending = false; // superseded by a newer toggle
+    }
+}
+
+// Keeps injecting tab taps (with settle gaps for the game's tab animation) until the
+// game's view matches the wanted one or the retry budget runs out — a tap can get eaten
+// (dialog opening, combat interruptions), and the user can flip the tab themselves.
+void PluginKingdomHeartsReCoded::driveBottomScreenTab()
+{
+    if (wantedBottomTab < 0) {
+        // Keep our intent honest when the user flips the tab themselves (the tree-view
+        // touch passthrough makes the on-screen MAP tab tappable).
+        if (TreeViewSelected && GameScene == gameScene_InGameWithMap && bottomScreenTabState() == 0) {
+            TreeViewSelected = false;
+        }
+        return;
+    }
+    if (GameScene != gameScene_InGameWithMap) {
+        return; // the tab isn't on screen/tappable right now; resume when back ingame
+    }
+    if (treeTabTapStep > 0) {
+        return; // a tap is in flight
+    }
+
+    int tab = bottomScreenTabState();
+    if (tab == wantedBottomTab) {
+        // Done — checked even mid-settle, so swap handoffs (and the transition box)
+        // never linger after the game's tab has really flipped.
+        wantedBottomTab = -1;
+        treeTabSettleFrames = 0;
+        return;
+    }
+    if (treeTabSettleFrames > 0) {
+        treeTabSettleFrames--; // not there yet: keep waiting out the tab animation
+        return;
+    }
+
+    treeTabRetryFrames--;
+    if (treeTabRetryFrames <= 0) {
+        // Give up and accept whatever the game is showing
+        wantedBottomTab = -1;
+        swapAwaitingContentFlip = false;
+        if (tab != -1) {
+            TreeViewSelected = SingleScreenMode && tab == 1;
+        }
+        return;
+    }
+
+    if (tab != -1) {
+        treeTabTapStep = 4;
+        treeTabSettleFrames = 30;
+    }
+}
+
+bool PluginKingdomHeartsReCoded::isTreeViewActive()
+{
+    // Stricter than the shape bit: during a map<->tree swap the enlarged box stays on
+    // screen showing MAP content (the tab flip plays inside it), and touches must never
+    // reach the map screen (it drives Sora's camera). Only the real, settled tree takes
+    // touch passthrough.
+    return SingleScreenMode
+        && GameScene == gameScene_InGameWithMap
+        && GameSceneState != -1
+        && (GameSceneState & (1 << gameSceneState_showFullscreenTree)) != 0
+        && TreeViewSelected
+        && wantedBottomTab == -1
+        && bottomScreenTabState() == 1;
+}
+
+// Mirrors the enlarged tree shape's geometry in renderer_composition (corner_Center,
+// sourceScale TREE_ENLARGED_SCALE, bottom margin), normalized to the composite output:
+// shape units live on a 256x192 * (SCREEN_SCALE/hudScale) canvas whose horizontal axis
+// is later stretched by the widescreen aspect (which heightScale pre-compensates).
+bool PluginKingdomHeartsReCoded::getTreeViewRect(float& x, float& y, float& w, float& h)
+{
+    float aspectRatio = AspectRatio / (4.f / 3.f);
+    float hudScale = (((float)UIScale) - 4) / 2 + 4;
+    float iuTexScale = SCREEN_SCALE / hudScale;
+    if (aspectRatio <= 0 || iuTexScale <= 0) {
+        return false;
+    }
+
+    w = TREE_ENLARGED_SCALE / (iuTexScale * aspectRatio);
+    h = TREE_ENLARGED_SCALE / iuTexScale;
+    x = (1.0f - w) / 2.0f;
+    y = (1.0f - h) / 2.0f - TREE_ENLARGED_MARGIN_BOTTOM / (192.0f * iuTexScale);
+    return true;
 }
 
 const char* PluginKingdomHeartsReCoded::getGameSceneName()

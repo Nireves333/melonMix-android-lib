@@ -54,6 +54,9 @@ public:
     void applyHotkeyToInputMaskOrTouchControls(u32* InputMask, u16* touchX, u16* touchY, bool* isTouching, u32* HotkeyMask, u32* HotkeyPress) override;
     void applyAddonKeysToInputMaskOrTouchControls(u32* InputMask, u16* touchX, u16* touchY, bool* isTouching, u32* HotkeyMask, u32* HotkeyPress) override;
 
+    bool isTreeViewActive() override;
+    bool getTreeViewRect(float& x, float& y, float& w, float& h) override;
+
     bool overrideMouseTouchCoords_singleScreen(int width, int height, int& x, int& y, bool& touching);
     bool overrideMouseTouchCoords_horizontalDualScreen(int width, int height, bool invert, int& x, int& y, bool& touching);
     bool overrideMouseTouchCoords(int width, int height, int& x, int& y, bool& touching) override;
@@ -110,6 +113,38 @@ private:
     int fullscreenMapTransitionStep = 0;
     int fullscreenMapSelectPressStep = 0;
     bool fullscreenMapShouldPreserveZoom = false;
+
+    // Single-screen tree view (the bottom screen's TREE/MAP tab, Android addition).
+    // Two orthogonal states: TreeViewSelected picks WHAT the corner view shows (map or
+    // tree), ViewEnlarged picks the SIZE (corner slot or the big center view; for the
+    // map it drives the upstream ShowFullscreenMap machinery). TreeViewSelected is our
+    // intent; the game owns the actual tab, so a wanted-tab request keeps injecting
+    // touch taps on the tab until the pixel probe confirms it.
+    bool TreeViewSelected = false;
+    bool ViewEnlarged = false;
+    bool viewSizeResetPending = false; // scene changed while enlarged: shrink on return
+    bool enlargeMapPending = false;    // enter fullscreen map once the tab is back on MAP
+    int lastViewSizeScene = -1;   // scene tracker for the enlarge auto-reset
+    int wantedBottomTab = -1;     // -1 none, 0 map, 1 tree
+    int treeTabTapStep = 0;       // frames left of the injected tab touch
+    int treeTabSettleFrames = 0;  // wait after a tap before trusting the tab probe again
+    int treeTabRetryFrames = 0;   // bounded retry budget for reaching the wanted tab
+    int mapToggleHeldFrames = -1; // -1 = map-toggle button not held (tap/hold split)
+    bool mapToggleHoldConsumed = false;
+    int treeTransitionStep = 0;   // corner box <-> enlarged box walk (map-parity anim)
+    int swapMorphToMapStep = 0;   // handoff morph: bottom-screen box -> map view
+    int swapMorphFromMapStep = 0; // handoff morph: map view -> bottom-screen box
+    // A map<->tree swap while enlarged keeps the native Select zoom (camera + map)
+    // where the fullscreen map put it, so the camera never lurches in/out per swap;
+    // the zoom is restored when actually shrinking (R3, scene reset, HUD toggle).
+    bool fullscreenMapZoomLatched = false;
+    // A map->tree swap keeps the PROPER map view on screen until the game's tab really
+    // starts flipping (the raw DS map screen must never show through the box); this is
+    // armed at the tap and fires when the tab probe leaves the map.
+    bool swapAwaitingContentFlip = false;
+    ivec2 lastKnownMinimapCenter {128, 96}; // for morph geometry when the probe is blind
+    float bottomScreenBrightnessFactor();   // 1 = bottom screen fully lit, 0 = fully faded
+    float viewTuckFollower = 1.0;           // squeeze-away/spring-back walk for the corner view
 
     std::map<GLuint, GLuint[10]> CompGpuLoc{};
     std::map<u32, GLuint[3]> CompGpu3DLoc{};
@@ -214,6 +249,12 @@ private:
 
     void hudToggle() override;
     void toggleFullscreenMap();
+    int bottomScreenTabState();
+    void toggleMapTreeView();
+    void toggleViewEnlarge();
+    void restoreLatchedZoom();
+    void refreshViewSizeForScene();
+    void driveBottomScreenTab();
     void debugLogs(int gameScene) override;
 };
 }
