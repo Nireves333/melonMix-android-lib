@@ -317,6 +317,8 @@ public:
     void stopReplacementCutsceneAndResumeGameAfterSkippingIngamePrerenderedCutscene();
     void skipIngamePrerenderedCutsceneAfterReplacementCutsceneFinishesNaturally();
     void resumeIngamePrerenderedCutsceneAfterReplacementCutsceneFailedToPlay(std::string error);
+    // [KHMM] shared skip-menu state reset for the two video-end paths above (row 16 fix)
+    void dismissCutsceneMenuAfterReplacementCutsceneStopped();
 
     std::function<void(std::string, std::string)> startReplacementCutscene = nullptr;
     std::function<void(int)> showCutscenePauseMenuOverlay = nullptr;
