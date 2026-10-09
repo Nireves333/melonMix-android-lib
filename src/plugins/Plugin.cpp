@@ -895,14 +895,27 @@ void Plugin::refreshCutscene()
         _ReplayFrameLimitCount = 60;
 
         if (!_DidReplacementCutsceneFailedToPlay && _CutscenesQueue.empty()) {
+            // Zero a slot only while it still holds the cutscene that just finished. At a
+            // back-to-back FMV handoff the game stages the NEXT cutscene's pointer in the
+            // slot while the previous HD video is still playing (the emulator is parked, so
+            // this code hasn't seen it yet); zeroing that live pointer crashes the game's
+            // FMV engine (Discussion #17 Day-258 softlock; upstream KHMelonMix #519).
             u32 cutsceneAddress = detectTopScreenMobiCutsceneAddress();
             if (cutsceneAddress != 0) {
-                nds->ARM7Write32(cutsceneAddress, 0x0);
+                u32 slotValue = nds->ARM7Read32(cutsceneAddress);
+                CutsceneEntry* slotCutscene = getMobiCutsceneByAddress(slotValue);
+                if (slotCutscene != nullptr && _LastCutscene != nullptr && slotCutscene->usAddress == _LastCutscene->usAddress) {
+                    nds->ARM7Write32(cutsceneAddress, 0x0);
+                }
             }
 
             u32 cutsceneAddress2 = detectBottomScreenMobiCutsceneAddress();
             if (cutsceneAddress2 != 0) {
-                nds->ARM7Write32(cutsceneAddress2, 0x0);
+                u32 slotValue2 = nds->ARM7Read32(cutsceneAddress2);
+                CutsceneEntry* slotCutscene2 = getMobiCutsceneByAddress(slotValue2);
+                if (slotCutscene2 != nullptr && _LastCutscene != nullptr && slotCutscene2->usAddress == _LastCutscene->usAddress) {
+                    nds->ARM7Write32(cutsceneAddress2, 0x0);
+                }
             }
         }
 
